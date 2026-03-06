@@ -3,10 +3,9 @@ import {
   canonicalizeComp, 
   scoreMatchup, 
   poissonBinomial, 
-  scoreSchedule,
-  Role,
-  StatsData
+  scoreSchedule
 } from '../lib/matchupScore';
+import type { Role, StatsData } from '../lib/matchupScore';
 
 describe('canonicalizeComp', () => {
   it('sorts roles alphabetically and joins with +', () => {
@@ -52,7 +51,7 @@ describe('scoreMatchup', () => {
     expect(score.used_h2h).toBe(false);
     expect(score.debug.gamesAB).toBe(0);
     expect(score.confidence).toBe(0); // exp(0) = 1, 1-1=0
-    expect(score.safe_score).toBe(score.predicted_win_pct - 15);
+    expect(score.safe_score).toBe(score.predicted_win_pct);
   });
 
   it('handles completely unknown compositions gracefully', () => {

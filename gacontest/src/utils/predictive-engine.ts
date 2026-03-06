@@ -1,5 +1,5 @@
 import type { MatchData, DFSStats, PredictiveMatchup, MokiPlayer, MokiSpecialty, SynergyGridRow, WindowGridRow } from '../types';
-import { COMPOSITION_WIN_RATES, MATCHUP_WIN_RATES } from './composition-data';
+import { COMPOSITION_WIN_RATES } from './composition-data';
 import { scoreMatchup } from '../lib/matchupScore';
 import type { StatsData, Role } from '../lib/matchupScore';
 

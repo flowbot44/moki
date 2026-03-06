@@ -10,6 +10,7 @@
 # Common git ignores for the gacontest subdirectory
 gacontest/node_modules/
 gacontest/dist/
+gacontest/public/data/
 gacontest/.DS_Store
 gacontest/*.log
 gacontest/.env.local

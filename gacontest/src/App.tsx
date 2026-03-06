@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import pako from 'pako';
-import { fetchLatest, fetchPartition } from './utils/data-fetcher';
-import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty, SynergyGridRow, WindowGridRow } from './types';
+import { fetchLatest, fetchPartition, DATA_URL } from './utils/data-fetcher';
+import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty } from './types';
 import { calculateDFSPoints } from './utils/dfs-scoring';
 import { generatePredictionGrid, generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
-import { MATCHUP_WIN_RATES } from './utils/composition-data';
 import { filterByScheme, sortByScheme, isChampionInScheme } from './utils/scheme-logic';
 import { MatchupScorer } from './components/MatchupScorer';
 import { ScheduleCompare } from './components/ScheduleCompare';
 import { scoreMatchup } from './lib/matchupScore';
 import type { StatsData, Role } from './lib/matchupScore';
-import { Zap, Loader2, BarChart3, Binary, LayoutGrid, Target, Sparkles, Activity, User, Calendar, Columns, ChevronDown, ChevronUp, UserSearch, TrendingUp, AlertTriangle, Users, ArrowLeft, Calculator } from 'lucide-react';
+import { Zap, Loader2, BarChart3, Binary, LayoutGrid, Target, Sparkles, Activity, Calendar, UserSearch, TrendingUp, AlertTriangle, ArrowLeft, Calculator } from 'lucide-react';
 
-type SortKey = 'total_points' | 'win_rate' | 'avg_eliminations' | 'avg_wart' | 'avg_deposits' | 'volatility';
+type SortKey = 'total_points' | 'win_rate' | 'avg_eliminations' | 'avg_wart' | 'avg_deposits' | 'volatility' | 'momentum';
 type WindowSortKey = 'w1Points' | 'w2Points' | 'w3Points' | 'totalPoints';
 type SynergySortKey = 'w1Synergy' | 'w2Synergy' | 'w3Synergy' | 'totalSynergy';
 type ViewMode = 'STATS' | 'PREDICTIONS' | 'DETAIL' | 'SCORER';
@@ -21,12 +19,11 @@ type GridMode = 'WINDOWS' | 'MATRIX' | 'SYNERGY';
 const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>('STATS');
-  const [gridMode, setGridMode] = useState<GridMode>('SYNERGY');
+  const [gridMode] = useState<GridMode>('SYNERGY');
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [championsStats, setChampionsStats] = useState<DFSStats[]>([]);
   const [championTraits, setChampionTraits] = useState<ChampionTrait[]>([]);
   const [schemes, setSchemes] = useState<Scheme[]>([]);
-  const [synergyMap, setSynergyMap] = useState<Record<string, { wins: number; games: number }>>({});
   const [counterMap, setCounterMap] = useState<Record<string, { wins: number; games: number }>>({});
   const [mokiSpecialties, setMokiSpecialties] = useState<Record<string, MokiSpecialty>>({});
   const [error, setError] = useState<string | null>(null);
@@ -98,9 +95,9 @@ const App: React.FC = () => {
       try {
         setLoading(true);
         const latest = await fetchLatest();
-        const mokiTotalsUrl = `https://flowbot44.github.io/grand-arena-builder-skill/data/${latest.moki_totals.url}`;
+        const mokiTotalsUrl = `${DATA_URL}/${latest.moki_totals.url}`;
         const [mokiStatsRes, traitsRes, schemesRes] = await Promise.all([
-          fetch(mokiTotalsUrl), fetch('/champions.json'), fetch('/schemes.json')
+          fetch(mokiTotalsUrl), fetch('./champions.json'), fetch('./schemes.json')
         ]);
         const mokiBaseStats = await mokiStatsRes.json();
         const traits = await traitsRes.json();
@@ -220,7 +217,6 @@ const App: React.FC = () => {
     });
 
     setChampionsStats(finalized.filter(s => s.is_champion));
-    setSynergyMap(synergies);
     setCounterMap(counters);
   };
 
@@ -369,9 +365,18 @@ const App: React.FC = () => {
         <div className="flex gap-2">
           <button onClick={() => setViewMode('STATS')} className={`terminal-button flex items-center gap-2 ${viewMode === 'STATS' ? 'bg-green-900/40 shadow-[0_0_10px_rgba(0,255,65,0.3)]' : ''}`}><BarChart3 size={16} /> CORE_STATS</button>
           <button onClick={() => setViewMode('PREDICTIONS')} className={`terminal-button flex items-center gap-2 ${viewMode === 'PREDICTIONS' ? 'bg-green-900/40 shadow-[0_0_10px_rgba(0,255,65,0.3)]' : ''}`}><Binary size={16} /> ADVANTAGE_GRID</button>
-          <button onClick={() => setViewMode('SCORER')} className={`terminal-button flex items-center gap-2 ${viewMode === 'SCORER' ? 'bg-green-900/40 shadow-[0_0_10px_rgba(0,255,65,0.3)]' : ''}`}><Calculator size={16} /> MATCHUP_LAB</button>
         </div>
       </header>
+
+      {error && (
+        <div className="bg-red-900/20 border-2 border-red-500 text-red-400 p-4 mb-8 font-mono text-xs flex items-center gap-3 animate-pulse">
+          <AlertTriangle size={20} />
+          <div>
+            <div className="font-black uppercase">System_Failure_Detected</div>
+            <div>{error}</div>
+          </div>
+        </div>
+      )}
 
       {viewMode !== 'DETAIL' && viewMode !== 'SCORER' && (
         <div className="terminal-card mb-8 grid grid-cols-1 md:grid-cols-3 gap-8 bg-green-900/5 items-center border-double border-4">
@@ -466,11 +471,6 @@ const App: React.FC = () => {
             <div className="flex items-center gap-4 flex-wrap">
               <h2 className="text-xl flex items-center gap-2 text-terminal-green font-black"><Binary className="text-cyan-400" size={20} /> PREDICTIVE_MATRICES</h2>
               {predictionAccuracy > 0 && <div className="text-[10px] font-mono border border-cyan-900 px-2 py-0.5 bg-cyan-900/10 text-cyan-400">ACCURACY: {predictionAccuracy.toFixed(1)}%</div>}
-              <div className="flex bg-black border border-terminal-green p-0.5">
-                <button onClick={() => setGridMode('WINDOWS')} className={`px-3 py-1 text-[9px] font-mono flex items-center gap-1 ${gridMode === 'WINDOWS' ? 'bg-green-900/60 text-white' : 'opacity-40'}`}><Columns size={10} /> WINDOW_SORTER</button>
-                <button onClick={() => setGridMode('MATRIX')} className={`px-3 py-1 text-[9px] font-mono flex items-center gap-1 ${gridMode === 'MATRIX' ? 'bg-green-900/60 text-white' : 'opacity-40'}`}><LayoutGrid size={10} /> 10_GAME_MATRIX</button>
-                <button onClick={() => setGridMode('SYNERGY')} className={`px-3 py-1 text-[9px] font-mono flex items-center gap-1 ${gridMode === 'SYNERGY' ? 'bg-green-900/60 text-white' : 'opacity-40'}`}><Users size={10} /> SYNERGY_SCORE</button>
-              </div>
             </div>
             <div className="flex items-center gap-2 font-mono text-[10px]">
               <Calendar size={12} className="text-cyan-400"/> START_POINT:

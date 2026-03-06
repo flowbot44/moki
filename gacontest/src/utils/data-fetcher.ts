@@ -1,6 +1,7 @@
 import pako from 'pako';
 import type { MatchData } from '../types';
 
+// Use the absolute URL for the data source
 export const DATA_URL = 'https://flowbot44.github.io/grand-arena-builder-skill/data';
 
 export const fetchLatest = async () => {
