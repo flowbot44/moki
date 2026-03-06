@@ -1,0 +1,20 @@
+# Ignore all root-level items by default
+/*
+
+# Except for these items
+!/gacontest/
+!/.github/
+!/.gitignore
+!/README.md
+
+# Common git ignores for the gacontest subdirectory
+gacontest/node_modules/
+gacontest/dist/
+gacontest/.DS_Store
+gacontest/*.log
+gacontest/.env.local
+
+# Git specific ignores
+.DS_Store
+__pycache__/
+*.pyc

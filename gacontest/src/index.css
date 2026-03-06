@@ -1,0 +1,103 @@
+:root {
+  --terminal-green: #00ff41;
+  --terminal-bg: #0d0208;
+  --terminal-glow: 0 0 10px rgba(0, 255, 65, 0.5);
+  --terminal-font: 'Courier New', Courier, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body, html, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  min-height: 100vh;
+  background-color: var(--terminal-bg);
+  color: var(--terminal-green);
+  font-family: var(--terminal-font);
+  overflow-x: hidden;
+  line-height: 1.5;
+}
+
+/* CRT Scanline Overlay */
+body::after {
+  content: " ";
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.1) 50%
+  ), linear-gradient(
+    90deg, 
+    rgba(255, 0, 0, 0.02), 
+    rgba(0, 255, 0, 0.01), 
+    rgba(0, 0, 255, 0.02)
+  );
+  z-index: 100;
+  background-size: 100% 3px, 3px 100%;
+  pointer-events: none;
+}
+
+/* Subtle Flicker */
+@keyframes flicker {
+  0% { opacity: 0.98; }
+  100% { opacity: 1; }
+}
+
+#root {
+  animation: flicker 0.15s infinite;
+}
+
+.terminal-card {
+  border: 1px solid var(--terminal-green);
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--terminal-glow);
+  background: rgba(0, 255, 65, 0.02);
+  width: 100%;
+}
+
+.terminal-header {
+  border-bottom: 1px double var(--terminal-green);
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+}
+
+.terminal-button {
+  background: transparent;
+  color: var(--terminal-green);
+  border: 1px solid var(--terminal-green);
+  padding: 0.4rem 1rem;
+  font-family: var(--terminal-font);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.terminal-button:hover {
+  background: var(--terminal-green);
+  color: var(--terminal-bg);
+  box-shadow: var(--terminal-glow);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  border: 1px solid rgba(0, 255, 65, 0.1);
+}
+
+.positive { color: #00ff41; }
+.negative { color: #ff3131; }
+
+tr.hover-row:hover {
+  background: rgba(0, 255, 65, 0.08) !important;
+}
