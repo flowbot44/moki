@@ -4,7 +4,7 @@ import { fetchLatest, fetchPartition, DATA_URL } from './utils/data-fetcher';
 import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty } from './types';
 import { calculateDFSPoints } from './utils/dfs-scoring';
 import { generatePredictionGrid, generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
-import { filterByScheme, sortByScheme, isChampionInScheme } from './utils/scheme-logic';
+import { filterByScheme, sortByScheme } from './utils/scheme-logic';
 import { scoreMatchup } from './lib/matchupScore';
 import type { StatsData, Role } from './lib/matchupScore';
 import { Zap, Loader2, BarChart3, Binary, LayoutGrid, Target, Activity, Calendar, UserSearch, TrendingUp, AlertTriangle, ArrowLeft } from 'lucide-react';
@@ -34,10 +34,6 @@ const App: React.FC = () => {
   const [selectedSchemeName, setSelectedSchemeName] = useState<string>('');
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('');
   const [targetStartDate, setTargetStartDate] = useState<string>(new Date().toISOString().split('T')[0]);
-
-  const getChampionTraitSchemes = (name: string) => {
-    return schemes.filter(s => (s.traits || s.exactTraits) && isChampionInScheme(name, s, championTraits));
-  };
 
   const getChampSpecialtyLabel = (mokiId: string) => {
     const stats = championsStats.find(s => s.moki_id === mokiId);
@@ -124,7 +120,7 @@ const App: React.FC = () => {
         });
         const uniqueMatches = Array.from(matchMap.values());
         setMatches(uniqueMatches);
-        processStats(uniqueMatches, specialties);
+        processStats(uniqueMatches);
       } catch (err) {
         setError('CRITICAL_SYSTEM_ERROR: UNABLE TO RETRIEVE CAREER_DATA');
         console.error(err);
@@ -135,7 +131,7 @@ const App: React.FC = () => {
     init();
   }, []);
 
-  const processStats = (data: MatchData[], specialties: Record<string, MokiSpecialty>) => {
+  const processStats = (data: MatchData[]) => {
     const statsMap: { [id: string]: DFSStats & { wins: number; recentWins: number; recentGames: number; scores: number[] } } = {};
     const counters: Record<string, { wins: number; games: number }> = {};
     const allDates = Array.from(new Set(data.map(m => m.match.match_date))).sort();
