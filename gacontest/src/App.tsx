@@ -4,7 +4,7 @@ import { fetchLatest, fetchPartition, DATA_URL } from './utils/data-fetcher';
 import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty } from './types';
 import { calculateDFSPoints } from './utils/dfs-scoring';
 import { generatePredictionGrid, generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
-import { filterByScheme, sortByScheme } from './utils/scheme-logic';
+import { filterByScheme, sortByScheme, isChampionInScheme } from './utils/scheme-logic';
 import { scoreMatchup } from './lib/matchupScore';
 import type { StatsData, Role } from './lib/matchupScore';
 import { Zap, Loader2, BarChart3, Binary, LayoutGrid, Target, Activity, Calendar, UserSearch, TrendingUp, AlertTriangle, ArrowLeft } from 'lucide-react';
@@ -34,6 +34,10 @@ const App: React.FC = () => {
   const [selectedSchemeName, setSelectedSchemeName] = useState<string>('');
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('');
   const [targetStartDate, setTargetStartDate] = useState<string>(new Date().toISOString().split('T')[0]);
+
+  const getChampionTraitSchemes = (name: string) => {
+    return schemes.filter(s => (s.traits || s.exactTraits) && isChampionInScheme(name, s, championTraits));
+  };
 
   const getChampSpecialtyLabel = (mokiId: string) => {
     const stats = championsStats.find(s => s.moki_id === mokiId);
@@ -402,9 +406,16 @@ const App: React.FC = () => {
                 <tbody>
                   {filteredAndSorted.map((champ) => (
                     <tr key={champ.moki_id} className="border-b border-green-900/10 hover-row transition-all whitespace-nowrap">
-                      <td className="p-3 md:p-4 font-bold border-r border-green-900/10 cursor-pointer hover:bg-green-900/20 group sticky left-0 bg-black z-10" onClick={() => handleSelectChampion(champ.moki_id)}>
-                        <div className="flex items-center gap-2">{champ.name}</div>
-                        <div className="text-[8px] md:text-[9px] opacity-40 mt-0.5">ROLE: {getChampSpecialtyLabel(champ.moki_id)}</div>
+                      <td className="p-3 md:p-4 border-r border-green-900/10 cursor-pointer hover:bg-green-900/20 sticky left-0 bg-black z-10" onClick={() => handleSelectChampion(champ.moki_id)}>
+                        <div className="font-bold text-xs md:text-sm whitespace-nowrap">{champ.name} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ.moki_id)}]</span></div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {getChampionTraitSchemes(champ.name).map((s, idx, arr) => (
+                            <React.Fragment key={s.name}>
+                              <span className="text-[8px] text-cyan-400 uppercase leading-none py-0.5">{s.name.split(' ')[0]}</span>
+                              {idx < arr.length - 1 && <span className="text-cyan-900 text-[8px] self-center">|</span>}
+                            </React.Fragment>
+                          ))}
+                        </div>
                       </td>
                       <td className="p-3 md:p-4 border-r border-green-900/10">{champ.win_rate.toFixed(1)}%</td>
                       <td className="p-3 md:p-4 border-r border-green-900/10"><div className="flex items-center gap-1 md:gap-2">{getVolatilityIcon(champ.volatility)} {champ.volatility.toFixed(1)}</div></td>
@@ -469,9 +480,9 @@ const App: React.FC = () => {
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
                       <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-0 bg-black border-r border-terminal-green z-20">Champion_ID</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w1Points')}>W1_1UTC {windowSortConfig.key === 'w1Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w2Points')}>W2_9UTC {windowSortConfig.key === 'w2Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w3Points')}>W3_17UTC {windowSortConfig.key === 'w3Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w1Points')}>W1_1_UTC {windowSortConfig.key === 'w1Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w2Points')}>W2_9_UTC {windowSortConfig.key === 'w2Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w3Points')}>W3_17_UTC {windowSortConfig.key === 'w3Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 bg-green-900/40 font-black cursor-pointer hover:bg-green-900/60 min-w-[100px]" onClick={() => handleWindowSort('totalPoints')}>DAY_DFS {windowSortConfig.key === 'totalPoints' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                     </tr>
                   </thead>
@@ -481,9 +492,14 @@ const App: React.FC = () => {
                       return (
                         <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
                           <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
-                            <div className="font-bold text-xs md:text-sm">{row.championName}</div>
-                            <div className="flex flex-wrap gap-1 mt-1 items-center opacity-40">
-                              <span className="text-[8px] italic">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span>
+                            <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
+                                <React.Fragment key={s.name}>
+                                  <span className="text-[8px] text-cyan-400 uppercase leading-none py-0.5">{s.name.split(' ')[0]}</span>
+                                  {idx < arr.length - 1 && <span className="text-cyan-900 text-[8px] self-center">|</span>}
+                                </React.Fragment>
+                              ))}
                             </div>
                           </td>
                           <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getWindowHeatColor(row.w1Points)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w1Points.toFixed(0)}</div></td>
@@ -510,8 +526,15 @@ const App: React.FC = () => {
                       return (
                         <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
                           <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
-                            <div className="font-bold text-xs md:text-sm">{row.championName}</div>
-                            <div className="text-[8px] opacity-40">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</div>
+                            <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
+                                <React.Fragment key={s.name}>
+                                  <span className="text-[8px] text-cyan-400 uppercase leading-none py-0.5">{s.name.split(' ')[0]}</span>
+                                  {idx < arr.length - 1 && <span className="text-cyan-900 text-[8px] self-center">|</span>}
+                                </React.Fragment>
+                              ))}
+                            </div>
                           </td>
                           {row.matches.map((m, i) => (
                             <td key={i} onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-2 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getHeatColor(m.adv)}`}>
@@ -531,9 +554,9 @@ const App: React.FC = () => {
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
                       <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-0 bg-black border-r border-terminal-green z-20">Champion_ID</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w1Synergy')}>W1_1UTC {synergySortConfig.key === 'w1Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w2Synergy')}>W2_9UTC {synergySortConfig.key === 'w2Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
-                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w3Synergy')}>W3_17UTC {synergySortConfig.key === 'w3Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w1Synergy')}>W1_1_UTC {synergySortConfig.key === 'w1Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w2Synergy')}>W2_9_UTC {synergySortConfig.key === 'w2Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w3Synergy')}>W3_17_UTC {synergySortConfig.key === 'w3Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 bg-green-900/40 font-black cursor-pointer hover:bg-green-900/60 min-w-[100px]" onClick={() => handleSynergySort('totalSynergy')}>SYN_DIFF {synergySortConfig.key === 'totalSynergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                     </tr>
                   </thead>
@@ -543,8 +566,15 @@ const App: React.FC = () => {
                       return (
                         <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
                           <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
-                            <div className="font-bold text-xs md:text-sm">{row.championName}</div>
-                            <div className="text-[8px] opacity-40">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</div>
+                            <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
+                                <React.Fragment key={s.name}>
+                                  <span className="text-[8px] text-cyan-400 uppercase leading-none py-0.5">{s.name.split(' ')[0]}</span>
+                                  {idx < arr.length - 1 && <span className="text-cyan-900 text-[8px] self-center">|</span>}
+                                </React.Fragment>
+                              ))}
+                            </div>
                           </td>
                           <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getSynergyHeatColor(row.w1Synergy / 10)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w1Synergy > 0 ? '+' : ''}{row.w1Synergy.toFixed(1)}</div></td>
                           <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getSynergyHeatColor(row.w2Synergy / 10)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w2Synergy > 0 ? '+' : ''}{row.w2Synergy.toFixed(1)}</div></td>
@@ -641,9 +671,9 @@ const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSp
     const m2 = getGroupMetrics(w2);
     const m3 = getGroupMetrics(w3);
     return [
-      { label: 'W1_1UTC [MATCHES 1-10]', games: w1, synergySum: m1.synergySum, xPointsSum: m1.xPointsSum },
-      { label: 'W2_9UTC [MATCHES 11-20]', games: w2, synergySum: m2.synergySum, xPointsSum: m2.xPointsSum },
-      { label: 'W3_17UTC [MATCHES 21-30]', games: w3, synergySum: m3.synergySum, xPointsSum: m3.xPointsSum }
+      { label: 'W1_1_UTC [MATCHES 1-10]', games: w1, synergySum: m1.synergySum, xPointsSum: m1.xPointsSum },
+      { label: 'W2_9_UTC [MATCHES 11-20]', games: w2, synergySum: m2.synergySum, xPointsSum: m2.xPointsSum },
+      { label: 'W3_17_UTC [MATCHES 21-30]', games: w3, synergySum: m3.synergySum, xPointsSum: m3.xPointsSum }
     ];
   }, [futureGames, mokiId, allStats, counterMap, statsData, mokiSpecialties]);
 
