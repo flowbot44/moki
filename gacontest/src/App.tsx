@@ -2,8 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Routes, Route, useNavigate, useLocation, useParams, Navigate } from 'react-router-dom';
 import { fetchLatest, fetchPartition, DATA_URL } from './utils/data-fetcher';
 import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty } from './types';
+import type { MokiStats } from './utils/stat-mapper';
 import { calculateDFSPoints } from './utils/dfs-scoring';
 import { generatePredictionGrid, generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
+import { runTrueBacktest } from './utils/backtest-logic';
 import { filterByScheme, sortByScheme, isChampionInScheme } from './utils/scheme-logic';
 import { scoreMatchup } from './lib/matchupScore';
 import type { StatsData, Role } from './lib/matchupScore';
@@ -21,10 +23,12 @@ const App: React.FC = () => {
   const [gridMode] = useState<GridMode>('SYNERGY');
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [championsStats, setChampionsStats] = useState<DFSStats[]>([]);
+  const [allPlayerStats, setAllPlayerStats] = useState<Record<string, DFSStats>>({});
   const [championTraits, setChampionTraits] = useState<ChampionTrait[]>([]);
   const [schemes, setSchemes] = useState<Scheme[]>([]);
   const [counterMap, setCounterMap] = useState<Record<string, { wins: number; games: number }>>({});
   const [mokiSpecialties, setMokiSpecialties] = useState<Record<string, MokiSpecialty>>({});
+  const [statMap, setStatMap] = useState<Record<string, MokiStats>>({});
   const [error, setError] = useState<string | null>(null);
   
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'desc' | 'asc' }>({ key: 'total_points', direction: 'desc' });
@@ -101,20 +105,33 @@ const App: React.FC = () => {
         setSchemes(schemeList);
 
         const specialties: Record<string, MokiSpecialty> = {};
+        const stats: Record<string, MokiStats> = {};
         mokiBaseStats.data.forEach((m: any) => {
           const str = m.totals.strength || 0;
           const dex = m.totals.dexterity || 0;
           const def = m.totals.defense || 0;
+          const spd = m.totals.speed || 0;
+          const fort = m.totals.fortitude || 0;
+          
+          stats[m.tokenId.toString()] = { strength: str, dexterity: dex, defense: def, speed: spd, fortitude: fort };
+
           const sorted = [{ type: 'ELIM_SPECIALIST', val: str }, { type: 'GACHA_SPECIALIST', val: dex }, { type: 'WART_SPECIALIST', val: def }].sort((a, b) => b.val - a.val);
           if (Math.abs(sorted[0].val - sorted[1].val) <= 5) specialties[m.tokenId.toString()] = 'BALANCED';
           else specialties[m.tokenId.toString()] = sorted[0].type as MokiSpecialty;
         });
         setMokiSpecialties(specialties);
+        setStatMap(stats);
 
         const activePartitions = latest.partitions.filter((p: any) => p.match_count > 0).slice(-7);
         const allData = await Promise.all(activePartitions.map((p: any) => fetchPartition(p.url)));
         const flatData = allData.flat();
-        
+
+        // Build token_id -> matchStats lookup from already-loaded moki_totals
+        const cumByToken: Record<number, any> = {};
+        mokiBaseStats.data.forEach((m: any) => {
+          if (m.matchStats) cumByToken[m.tokenId] = m.matchStats;
+        });
+
         const matchMap = new Map<string, MatchData>();
         flatData.forEach(m => {
           const existing = matchMap.get(m.match.match_id);
@@ -124,7 +141,7 @@ const App: React.FC = () => {
         });
         const uniqueMatches = Array.from(matchMap.values());
         setMatches(uniqueMatches);
-        processStats(uniqueMatches);
+        processStats(uniqueMatches, cumByToken);
       } catch (err) {
         setError('CRITICAL_SYSTEM_ERROR: UNABLE TO RETRIEVE CAREER_DATA');
         console.error(err);
@@ -135,11 +152,11 @@ const App: React.FC = () => {
     init();
   }, []);
 
-  const processStats = (data: MatchData[]) => {
+  const processStats = (data: MatchData[], cumByToken: Record<number, any> = {}) => {
     const statsMap: { [id: string]: DFSStats & { wins: number; recentWins: number; recentGames: number; scores: number[] } } = {};
     const counters: Record<string, { wins: number; games: number }> = {};
-    const allDates = Array.from(new Set(data.map(m => m.match.match_date))).sort();
-    const recentThreshold = allDates.slice(-2)[0] || "";
+    const scoredDates = Array.from(new Set(data.filter(m => m.match.state === 'scored').map(m => m.match.match_date))).sort();
+    const recentThreshold = scoredDates.slice(-2)[0] || "";
 
     data.filter(m => m.match.state === 'scored').forEach((m) => {
       const isWinner = m.match.team_won;
@@ -161,7 +178,7 @@ const App: React.FC = () => {
             };
           }
           const stats = statsMap[p.moki_id];
-          const performance = m.performances.find((perf) => perf.moki_id === p.moki_id);
+          const performance = m.performances.find((perf) => perf.moki_id === p.moki_id || perf.token_id === p.token_id);
           const score = calculateDFSPoints(performance, m.match, teamNum);
           stats.total_points += score;
           stats.scores.push(score);
@@ -195,16 +212,22 @@ const App: React.FC = () => {
       const avg = s.total_points / s.games_played;
       const squareDiffs = s.scores.map(score => Math.pow(score - avg, 2));
       const variance = squareDiffs.reduce((a, b) => a + b, 0) / s.games_played;
+      const cum = cumByToken[s.token_id];
       return {
         ...s, win_rate: overallWR, momentum: recentWR - overallWR,
         confidence: Math.min(100, (s.games_played / 50) * 100),
         volatility: Math.sqrt(variance),
-        avg_deposits: s.avg_deposits / s.games_played,
-        avg_eliminations: s.avg_eliminations / s.games_played,
-        avg_wart: s.avg_wart / s.games_played,
+        avg_deposits: cum ? cum.avgDeposits : (s.avg_deposits / s.games_played),
+        avg_eliminations: cum ? cum.avgEliminations : (s.avg_eliminations / s.games_played),
+        avg_wart: cum ? cum.avgWartDistance : (s.avg_wart / s.games_played),
       };
     });
+
+    const statsRecord: Record<string, DFSStats> = {};
+    finalized.forEach(s => { statsRecord[s.moki_id] = s; });
+
     setChampionsStats(finalized.filter(s => s.is_champion));
+    setAllPlayerStats(statsRecord);
     setCounterMap(counters);
   };
 
@@ -232,26 +255,6 @@ const App: React.FC = () => {
       return (a[sortConfig.key] < b[sortConfig.key]) ? -modifier : modifier;
     });
   }, [championsStats, selectedScheme, selectedSpecialty, minWinRate, championTraits, sortConfig, mokiSpecialties]);
-
-  const predictionGrid = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const startFilter = targetStartDate || today;
-    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
-    const grid = generatePredictionGrid(allDailyMatches, filteredAndSorted, mokiSpecialties, championsStats, counterMap);
-    const hasStatSort = selectedScheme && selectedScheme.sortKey;
-    return hasStatSort ? grid : [...grid].sort((a, b) => b.totalXPoints - a.totalXPoints);
-  }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, championsStats, selectedScheme, counterMap]);
-
-  const tripleWindowGrid = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const startFilter = targetStartDate || today;
-    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
-    const grid = generateTripleWindowGrid(allDailyMatches, filteredAndSorted, mokiSpecialties, championsStats, counterMap);
-    return [...grid].sort((a, b) => {
-      const modifier = windowSortConfig.direction === 'asc' ? 1 : -1;
-      return (a[windowSortConfig.key] < b[windowSortConfig.key]) ? -modifier : modifier;
-    });
-  }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, championsStats, windowSortConfig, counterMap]);
 
   const statsData = useMemo<StatsData>(() => {
     const composition: Record<string, { wins: number; games: number }> = {};
@@ -281,6 +284,26 @@ const App: React.FC = () => {
     return { composition, headToHead };
   }, [matches, mokiSpecialties]);
 
+  const predictionGrid = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const startFilter = targetStartDate || today;
+    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
+    const grid = generatePredictionGrid(allDailyMatches, filteredAndSorted, mokiSpecialties, allPlayerStats, counterMap, statsData);
+    const hasStatSort = selectedScheme && selectedScheme.sortKey;
+    return hasStatSort ? grid : [...grid].sort((a, b) => b.totalXPoints - a.totalXPoints);
+  }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, allPlayerStats, selectedScheme, counterMap, statsData]);
+
+  const tripleWindowGrid = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const startFilter = targetStartDate || today;
+    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
+    const grid = generateTripleWindowGrid(allDailyMatches, filteredAndSorted, mokiSpecialties, allPlayerStats, counterMap, statsData);
+    return [...grid].sort((a, b) => {
+      const modifier = windowSortConfig.direction === 'asc' ? 1 : -1;
+      return (a[windowSortConfig.key] < b[windowSortConfig.key]) ? -modifier : modifier;
+    });
+  }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, allPlayerStats, windowSortConfig, counterMap, statsData]);
+
   const synergyGrid = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
     const startFilter = targetStartDate || today;
@@ -292,17 +315,22 @@ const App: React.FC = () => {
     });
   }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, synergySortConfig, statsData]);
 
-  const predictionAccuracy = useMemo(() => {
-    const scored = matches.filter(m => m.match.state === 'scored' && m.match.team_won !== null);
-    if (scored.length === 0) return 0;
-    let correct = 0;
-    scored.forEach(m => {
-      const pred = calculatePredictiveAdvantage(m, championsStats, mokiSpecialties, counterMap);
-      const predictedWinner = pred.advantage > 0 ? 1 : 2;
-      if (m.match.team_won === predictedWinner) correct++;
-    });
-    return (correct / scored.length) * 100;
-  }, [matches, championsStats, mokiSpecialties, counterMap]);
+  const [predictionAccuracy, setPredictionAccuracy] = useState<number | null>(null);
+  const [highConfAccuracy, setHighConfAccuracy] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (loading || matches.length === 0 || Object.keys(mokiSpecialties).length === 0) return;
+
+    // Defer the heavy backtest calculation
+    const timer = setTimeout(() => {
+      const results = runTrueBacktest(matches, mokiSpecialties, statMap);
+      console.log(`True Backtest Results: ${results.correctPredictions}/${results.totalMatches} correct. Accuracy: ${results.accuracy.toFixed(1)}%. High Conf: ${results.highConfidenceAccuracy.toFixed(1)}%`);
+      setPredictionAccuracy(results.accuracy);
+      setHighConfAccuracy(results.highConfidenceAccuracy);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [matches, mokiSpecialties, statMap, loading]);
 
   const handleWindowSort = (key: WindowSortKey) => {
     setWindowSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
@@ -320,7 +348,7 @@ const App: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen text-terminal-green font-mono">
-        <div className="text-2xl animate-pulse"><Loader2 className="animate-spin inline mr-2" /> BOOTING_SYSTEM_v3.4...</div>
+        <div className="text-2xl animate-pulse"><Loader2 className="animate-spin inline mr-2" /> BOOTING_SYSTEM_v5.1...</div>
       </div>
     );
   }
@@ -333,7 +361,7 @@ const App: React.FC = () => {
     <div className="p-2 md:p-4 w-full max-w-[100vw] mx-auto overflow-x-hidden">
       <header className="terminal-header flex flex-col md:flex-row justify-between items-start md:items-center mb-6 md:mb-8 gap-4 px-2">
         <div onClick={() => navigate('/')} className="cursor-pointer w-full md:w-auto">
-          <h1 className="text-xl md:text-3xl font-bold tracking-tighter text-terminal-green uppercase italic shadow-green-500/20 shadow-sm leading-tight">Grand_Arena // Role_Engine_v3.4</h1>
+          <h1 className="text-xl md:text-3xl font-bold tracking-tighter text-terminal-green uppercase italic shadow-green-500/20 shadow-sm leading-tight">GRAND_ARENA // MATCH_ORACLE</h1>
           <div className="text-[10px] md:text-sm opacity-70 flex flex-wrap items-center gap-2 md:gap-4 font-mono mt-1">
             <span>STATUS: <span className="text-white">ONLINE</span></span>
             <span className="flex items-center gap-1 text-cyan-400"><TrendingUp size={12} className="md:w-3.5 md:h-3.5" /> MOBILE_OPTIMIZED</span>
@@ -464,8 +492,15 @@ const App: React.FC = () => {
             </div>
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 border-b border-terminal-green pb-2 px-2 gap-4">
               <div className="flex items-center gap-4 flex-wrap">
-                <h2 className="text-lg md:text-xl flex items-center gap-2 text-terminal-green font-black uppercase"><Binary className="text-cyan-400" size={20} /> Predictive_Matrices</h2>
-                {predictionAccuracy > 0 && <div className="text-[10px] font-mono border border-cyan-900 px-2 py-0.5 bg-cyan-950/20 text-cyan-400">ACCURACY: {predictionAccuracy.toFixed(1)}%</div>}
+              <h2 className="text-lg md:text-xl flex items-center gap-2 text-terminal-green font-black uppercase"><Binary className="text-cyan-400" size={20} /> WIN_PROBABILITY // MATCHUP_MATRIX</h2>
+              <div className="flex gap-2">
+                <div className="text-[10px] font-mono border border-cyan-900 px-2 py-0.5 bg-cyan-950/20 text-cyan-400">
+                  {predictionAccuracy !== null ? `TOTAL_ACC: ${predictionAccuracy.toFixed(1)}%` : 'CALCULATING...'}
+                </div>
+                <div className="text-[10px] font-mono border border-yellow-900 px-2 py-0.5 bg-yellow-950/20 text-yellow-400">
+                  {highConfAccuracy !== null ? `CONF_ACC: ${highConfAccuracy.toFixed(1)}%` : '---'}
+                </div>
+              </div>
               </div>
               <div className="flex items-center gap-2 font-mono text-[10px] w-full md:w-auto bg-green-900/10 p-2 md:p-0 rounded border md:border-0 border-green-900/30">
                 <Calendar size={12} className="text-cyan-400 shrink-0"/> START_POINT:
@@ -523,10 +558,18 @@ const App: React.FC = () => {
                   <tbody>
                     {predictionGrid.map((row) => {
                       const champ = championsStats.find(s => s.name === row.championName);
+                      const champStats = statMap[champ?.token_id?.toString() || ''];
+                      const isBully = champStats && champStats.strength > 210;
+                      const isScorer = champStats && champStats.dexterity > 210;
+
                       return (
                         <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
                           <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
-                            <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                            <div className="flex items-center gap-2">
+                              <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                              {isBully && <span className="text-[7px] bg-red-950 text-red-500 border border-red-900 px-1 rounded px-1 leading-tight">BULLY</span>}
+                              {isScorer && <span className="text-[7px] bg-cyan-950 text-cyan-500 border border-cyan-900 px-1 rounded px-1 leading-tight">SCORER</span>}
+                            </div>
                             <div className="flex flex-wrap gap-1 mt-1">
                               {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
                                 <React.Fragment key={s.name}>
@@ -536,12 +579,16 @@ const App: React.FC = () => {
                               ))}
                             </div>
                           </td>
-                          {row.matches.map((m, i) => (
-                            <td key={i} onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-2 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getHeatColor(m.adv)}`}>
-                              <div className="truncate w-full max-w-[40px] md:max-w-[60px] mx-auto opacity-50 text-[7px] md:text-[8px]">{m.oppName.split(' ')[0]}</div>
-                              <div className="font-bold text-[10px] md:text-sm">{m.xPoints.toFixed(0)}</div>
-                            </td>
-                          ))}
+                          {row.matches.map((m, i) => {
+                            const isHighConf = m.adv > 10 || m.adv < -10; // Corresponds to >60% or <40%
+                            return (
+                              <td key={i} onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-2 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 relative ${getHeatColor(m.adv)}`}>
+                                {isHighConf && <div className="absolute top-0 right-0 bg-yellow-400 w-1.5 h-1.5 rounded-bl-sm shadow-[0_0_5px_rgba(250,204,21,0.5)]"></div>}
+                                <div className="truncate w-full max-w-[40px] md:max-w-[60px] mx-auto opacity-50 text-[7px] md:text-[8px]">{m.oppName.split(' ')[0]}</div>
+                                <div className="font-bold text-[10px] md:text-sm">{m.xPoints.toFixed(0)}</div>
+                              </td>
+                            );
+                          })}
                           {[...Array(Math.max(0, 10 - row.matches.length))].map((_, i) => (<td key={i + row.matches.length} className="p-2 border-r border-green-900/10 opacity-10 text-center">N/A</td>))}
                           <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className="p-3 md:p-4 font-bold text-center text-[10px] md:text-sm positive bg-green-950/10 cursor-pointer hover:bg-green-900/20">+{row.totalXPoints.toFixed(0)}</td>
                         </tr>
@@ -594,7 +641,8 @@ const App: React.FC = () => {
             matches={matches} 
             mokiSpecialties={mokiSpecialties} 
             statsData={statsData}
-            allStats={championsStats}
+            statMap={statMap}
+            allStats={allPlayerStats}
             counterMap={counterMap}
             targetDate={targetStartDate}
             onBack={() => navigate(-1)}
@@ -605,7 +653,7 @@ const App: React.FC = () => {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 
-      <footer className="mt-8 md:mt-12 pt-4 border-t border-terminal-green text-center text-[8px] md:text-[9px] opacity-40 font-mono tracking-widest uppercase pb-4">System_Protocol_v3.4 // Neural_Network_Stable // Mobile_Mapping_Active</footer>
+      <footer className="mt-8 md:mt-12 pt-4 border-t border-terminal-green text-center text-[8px] md:text-[9px] opacity-40 font-mono tracking-widest uppercase pb-4">System_Protocol_v5.1 // Neural_Network_Stable // Mobile_Mapping_Active</footer>
     </div>
   );
 };
@@ -614,7 +662,8 @@ interface ChampionDetailViewProps {
   matches: MatchData[];
   mokiSpecialties: Record<string, MokiSpecialty>;
   statsData: StatsData;
-  allStats: DFSStats[];
+  statMap: Record<string, MokiStats>;
+  allStats: Record<string, DFSStats>;
   counterMap: Record<string, { wins: number; games: number }>;
   targetDate: string;
   onBack: () => void;
@@ -622,10 +671,10 @@ interface ChampionDetailViewProps {
   getSynergyHeatColor: (diff: number) => string;
 }
 
-const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSpecialties, statsData, allStats, counterMap, targetDate, onBack, getChampSpecialtyLabel, getSynergyHeatColor }) => {
+const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSpecialties, statsData, statMap, allStats, counterMap, targetDate, onBack, getChampSpecialtyLabel, getSynergyHeatColor }) => {
   const { mokiId } = useParams<{ mokiId: string }>();
   const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
-  const championStats = allStats.find(s => s.moki_id === mokiId);
+  const championStats = mokiId ? allStats[mokiId] : null;
   const championName = championStats?.name || "Unknown Champion";
 
   const getMatchupDetails = (match: MatchData) => {
@@ -645,9 +694,10 @@ const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSp
     const oppRoles = oppTeam.map(p => getRoleChar(mokiSpecialties[p.token_id.toString()] || 'BALANCED'));
     const synResult = scoreMatchup(myRoles, oppRoles, statsData);
     const synergyScore = (synResult.safe_score - 50) / 10;
-    const pred = calculatePredictiveAdvantage(match, allStats, mokiSpecialties, counterMap);
+    const pred = calculatePredictiveAdvantage(match, allStats, mokiSpecialties, counterMap, statsData, statMap);
     const xPoints = isTeam1 ? pred.teamA.pointsExpected : pred.teamB.pointsExpected;
-    return { synResult, synergyScore, xPoints, myRoles, oppRoles };
+    const winProb = isTeam1 ? pred.teamA.winProbability : pred.teamB.winProbability;
+    return { synResult, synergyScore, xPoints, winProb, myRoles, oppRoles };
   };
 
   const futureGames = useMemo(() => {
@@ -693,16 +743,23 @@ const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSp
         <tbody>
           {matchList.map((m, i) => {
             const me = m.players.find(p => p.moki_id === mokiId);
-            const { synResult, synergyScore, xPoints, myRoles, oppRoles } = getMatchupDetails(m);
+            const { synResult, synergyScore, xPoints, winProb, myRoles, oppRoles } = getMatchupDetails(m);
             const oppChamp = m.players.find(p => p.is_champion && p.moki_id !== mokiId);
             const isScored = m.match.state === 'scored';
             const won = isScored ? m.match.team_won === me?.team : null;
             const isExpanded = expandedMatch === m.match.match_id;
+            const isHighConf = winProb > 60 || winProb < 40;
+
             return (
               <React.Fragment key={m.match.match_id}>
                 <tr className={`border-b border-green-900/5 hover:bg-green-900/10 transition-colors cursor-pointer whitespace-nowrap ${isExpanded ? 'bg-green-900/20' : ''}`} onClick={() => setExpandedMatch(isExpanded ? null : m.match.match_id)}>
                   <td className="p-3 md:p-4 text-center opacity-40">{isExpanded ? '▼' : '▶'}</td>
-                  <td className="p-3 md:p-4 opacity-40">{i + 1 + offset}</td>
+                  <td className="p-3 md:p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="opacity-40">{i + 1 + offset}</span>
+                      {isHighConf && <Zap size={10} className="text-yellow-400 fill-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.4)]" />}
+                    </div>
+                  </td>
                   <td className="p-3 md:p-4 font-bold text-cyan-400">{oppChamp ? oppChamp.name : "Team"}</td>
                   <td className="p-3 md:p-4 text-center font-black text-terminal-green">{xPoints.toFixed(0)}</td>
                   <td className={`p-3 md:p-4 text-center font-bold ${getSynergyHeatColor(synergyScore)}`}>{synergyScore.toFixed(1)}</td>
@@ -746,7 +803,7 @@ const ChampionDetailView: React.FC<ChampionDetailViewProps> = ({ matches, mokiSp
                             <h4 className="text-terminal-green font-bold mb-3 uppercase border-b border-terminal-green/30 pb-1 text-[10px] md:text-xs">Probability_Metrics</h4>
                             <div className="space-y-2 text-[9px] md:text-[10px]">
                               <div className="flex justify-between"><span className="opacity-60">Win_Prob_Raw:</span><span className="text-cyan-400 font-bold">{synResult.predicted_win_pct.toFixed(1)}%</span></div>
-                              <div className="flex justify-between"><span className="opacity-60">Confidence:</span><span className="text-cyan-400 font-bold">{(synResult.confidence * 100).toFixed(1)}%</span></div>
+                              <div className="flex justify-between"><span className="opacity-60">Data_Strength:</span><span className="text-cyan-400 font-bold">{(synResult.confidence * 100).toFixed(1)}%</span></div>
                               <div className="flex justify-between border-t border-terminal-green/20 pt-2 mt-2"><span className="opacity-60 uppercase">Adj_Syn_Score:</span><span className={`font-bold ${getSynergyHeatColor(synergyScore)}`}>{synergyScore.toFixed(1)}</span></div>
                             </div>
                           </div>

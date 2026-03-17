@@ -129,7 +129,7 @@
   {
     "name": "Divine Intervention",
     "description": "25 points for EACH Spirit Fur trait in lineup",
-    "traits": ["Spirit"]
+    "exactTraits": ["Spirit"]
   },
   {
     "name": "Whale Watching",

@@ -1,6 +1,7 @@
 import type { MatchData, DFSStats, PredictiveMatchup, MokiPlayer, MokiSpecialty, SynergyGridRow, WindowGridRow } from '../types';
 import { COMPOSITION_WIN_RATES } from './composition-data';
 import { scoreMatchup } from '../lib/matchupScore';
+import { compareTeamStats, type MokiStats } from './stat-mapper';
 import type { StatsData, Role } from '../lib/matchupScore';
 
 export interface ChampGridRow {
@@ -27,55 +28,125 @@ const getRoleChar = (spec: MokiSpecialty): Role => {
 
 export const calculatePredictiveAdvantage = (
   match: MatchData,
-  allStats: DFSStats[],
+  allStats: Record<string, DFSStats>,
   mokiSpecialties: Record<string, MokiSpecialty>,
-  counterMap: Record<string, { wins: number; games: number }> = {}
+  counterMap: Record<string, { wins: number; games: number }> = {},
+  statsData?: StatsData,
+  statMap?: Record<string, MokiStats>
 ): PredictiveMatchup => {
   const teamA = match.players.filter(p => p.team === 1);
   const teamB = match.players.filter(p => p.team === 2);
 
   const getTeamScore = (players: MokiPlayer[], opponents: MokiPlayer[]) => {
-    const champion = players.find(p => p.is_champion);
-    const oppChampion = opponents.find(p => p.is_champion);
-    const comp = getTeamComposition(players, mokiSpecialties);
+    // 1. History (Weight: 70%) — champion is the team identity in Grand Arena
+    const teamWR = players.reduce((sum, p) => {
+        const s = allStats[p.moki_id];
+        const g = s?.games_played || 0;
+        const r = (s?.win_rate || 50) / 100;
+        const bayesWR = g > 0 ? r : 0.5;
+        const w = p.is_champion ? 1.0 : 0.0;
+        return sum + bayesWR * w;
+    }, 0);
 
-    // 1. Composition Baseline (Weight: 35%)
-    let compWR = COMPOSITION_WIN_RATES[comp] || 0.5;
-    
-    // 2. Bayesian Champion Form (Weight: 35%)
-    const champStats = allStats.find(s => s.moki_id === champion?.moki_id);
-    const games = champStats?.games_played || 0;
-    const rawWR = (champStats?.win_rate || 50) / 100;
-    const bayesianWR = ( (games * rawWR) + (10 * 0.5) ) / (games + 10);
-
-    // 3. Momentum Factor (Weight: 15%)
-    const momentum = (champStats?.momentum || 0) / 100;
-
-    // 4. Head-to-Head Counter (Weight: 15%)
-    let counterMod = 0;
-    if (champion && oppChampion) {
-      const matchupKey = `${champion.name} vs ${oppChampion.name}`;
-      const headToHead = counterMap[matchupKey];
-      if (headToHead && headToHead.games >= 2) {
-        counterMod = (headToHead.wins / headToHead.games) - 0.5;
-      }
+    // 2. Stats (Weight: 30%) — archetype matchup model
+    let statScore = 0.5;
+    if (statMap) {
+      const myTeamStats = players.map(p => statMap[p.token_id.toString()] || { strength: 250, speed: 250, defense: 250, dexterity: 250, fortitude: 250 });
+      const oppTeamStats = opponents.map(p => statMap[p.token_id.toString()] || { strength: 250, speed: 250, defense: 250, dexterity: 250, fortitude: 250 });
+      statScore = compareTeamStats(myTeamStats, oppTeamStats);
     }
 
-    return (compWR * 0.35) + (bayesianWR * 0.35) + (momentum * 0.15) + (counterMod * 0.15);
+    return (teamWR * 0.70) + (statScore * 0.30);
   };
 
   const scoreA = getTeamScore(teamA, teamB);
   const scoreB = getTeamScore(teamB, teamA);
 
   const total = scoreA + scoreB;
-  const winProbabilityA = (scoreA / total) * 100;
-  const finalProbA = Math.max(5, Math.min(95, winProbabilityA));
+  let winProbabilityA = 50;
+  if (total > 0 && !isNaN(total)) {
+    winProbabilityA = (scoreA / total) * 100;
+  }
+  
+  if (isNaN(winProbabilityA)) winProbabilityA = 50;
+
+  const compKeyA = getTeamComposition(teamA, mokiSpecialties);
+
+  // Composition baseline: blend in team A's historical team-1 win rate by composition (20% weight)
+  const compBaseA = COMPOSITION_WIN_RATES[compKeyA];
+  if (compBaseA !== undefined) {
+    winProbabilityA = winProbabilityA * 0.80 + (compBaseA * 100) * 0.20;
+  }
+
+  // Champion H2H: blend in directional win rate for this specific champion matchup
+  const champA_player = teamA.find(p => p.is_champion);
+  const champB_player = teamB.find(p => p.is_champion);
+
+  if (champA_player?.name && champB_player?.name) {
+    const h2hKey = `${champA_player.name} vs ${champB_player.name}`;
+    const h2h = counterMap[h2hKey];
+    if (h2h && h2h.games >= 5) {
+      const h2hWR = (h2h.wins / h2h.games) * 100;
+      // More evidence = more weight — champion H2H is the strongest directional signal
+      const h2hWeight = h2h.games >= 20 ? 0.50 : h2h.games >= 10 ? 0.40 : 0.25;
+      winProbabilityA = winProbabilityA * (1 - h2hWeight) + h2hWR * h2hWeight;
+    }
+  }
+
+  // Composition H2H: use historical matchup win rates for this exact role composition pair
+  if (statsData?.headToHead) {
+    const teamARoles = teamA.map(p => getRoleChar((mokiSpecialties[p.token_id.toString()] || 'BALANCED') as MokiSpecialty)).sort().join("+");
+    const teamBRoles = teamB.map(p => getRoleChar((mokiSpecialties[p.token_id.toString()] || 'BALANCED') as MokiSpecialty)).sort().join("+");
+    const forwardKey = `${teamARoles}|${teamBRoles}`;
+    const reverseKey = `${teamBRoles}|${teamARoles}`;
+    const fwd = statsData.headToHead[forwardKey];
+    const rev = statsData.headToHead[reverseKey];
+    let compWR: number | null = null;
+    const gamesCount = fwd?.games || rev?.games || 0;
+    if (fwd && fwd.games >= 8) {
+      compWR = (fwd.winsA / fwd.games) * 100;
+    } else if (rev && rev.games >= 8) {
+      compWR = ((rev.games - rev.winsA) / rev.games) * 100;
+    }
+    if (compWR !== null) {
+      const compWeight = gamesCount >= 15 ? 0.30 : 0.20;
+      winProbabilityA = winProbabilityA * (1 - compWeight) + compWR * compWeight;
+    }
+  }
+
+  // Team performance comparison: actual in-game stats (all members) vs opponent team
+  const teamAPerf = teamA.reduce((acc, p) => {
+    const s = allStats[p.moki_id];
+    if (s && s.games_played >= 5) {
+      acc.elim += s.avg_eliminations; acc.depo += s.avg_deposits; acc.wart += s.avg_wart; acc.count++;
+    }
+    return acc;
+  }, { elim: 0, depo: 0, wart: 0, count: 0 });
+  const teamBPerf = teamB.reduce((acc, p) => {
+    const s = allStats[p.moki_id];
+    if (s && s.games_played >= 5) {
+      acc.elim += s.avg_eliminations; acc.depo += s.avg_deposits; acc.wart += s.avg_wart; acc.count++;
+    }
+    return acc;
+  }, { elim: 0, depo: 0, wart: 0, count: 0 });
+  if (teamAPerf.count >= 3 && teamBPerf.count >= 3) {
+    const ae = teamAPerf.elim / teamAPerf.count, be = teamBPerf.elim / teamBPerf.count;
+    const ad = teamAPerf.depo / teamAPerf.count, bd = teamBPerf.depo / teamBPerf.count;
+    const aw = teamAPerf.wart / teamAPerf.count, bw = teamBPerf.wart / teamBPerf.count;
+    const perfScore = ((ae / (ae + be + 0.001)) + (ad / (ad + bd + 0.001)) + (aw / (aw + bw + 0.001))) / 3;
+    winProbabilityA = winProbabilityA * 0.90 + (perfScore * 100) * 0.10;
+  }
+
+  // Team 1 (A) structural advantage: wins ~60% of matches historically.
+  // Shift center to 62%, amplify stat+H2H signal at 1.5x.
+  const statSignal = winProbabilityA - 50;
+  const finalProbA = Math.max(2, Math.min(98, 62 + statSignal * 1.5));
   const finalProbB = 100 - finalProbA;
 
   const calculatePoints = (prob: number, players: MokiPlayer[]) => {
     const champion = players.find(p => p.is_champion);
     if (!champion) return 0;
-    const stats = allStats.find(s => s.moki_id === champion.moki_id);
+    const stats = allStats[champion.moki_id];
     const winPoints = (prob / 100) * 300;
     if (!stats) return winPoints;
 
@@ -98,8 +169,10 @@ export const generatePredictionGrid = (
   scheduledMatches: MatchData[],
   displayChampions: DFSStats[],
   mokiSpecialties: Record<string, MokiSpecialty>,
-  allStats: DFSStats[],
-  counterMap: any = {}
+  allStats: Record<string, DFSStats>,
+  counterMap: any = {},
+  statsData?: StatsData,
+  statMap?: Record<string, MokiStats>
 ): ChampGridRow[] => {
   return displayChampions.map(champ => {
     const champMatches = scheduledMatches
@@ -108,7 +181,7 @@ export const generatePredictionGrid = (
       .slice(0, 10);
 
     const matchResults = champMatches.map(m => {
-      const pred = calculatePredictiveAdvantage(m, allStats, mokiSpecialties, counterMap);
+      const pred = calculatePredictiveAdvantage(m, allStats, mokiSpecialties, counterMap, statsData, statMap);
       const isTeamA = m.players.find(p => p.moki_id === champ.moki_id)?.team === 1;
       const relAdv = isTeamA ? pred.advantage : -pred.advantage;
       const xPoints = isTeamA ? pred.teamA.pointsExpected : pred.teamB.pointsExpected;
@@ -149,8 +222,6 @@ export const generateSynergyGrid = (
         const oppRoles = oppTeam.map(p => getRoleChar(mokiSpecialties[p.token_id.toString()] || 'BALANCED'));
         
         const matchup = scoreMatchup(myRoles, oppRoles, statsData);
-        // Map win probability / safe score to a scale relative to 50
-        // (safe_score - 50) / 10 gives a granular score where +1 is a strong advantage
         return sum + (matchup.safe_score - 50) / 10;
       }, 0);
     };
@@ -173,8 +244,10 @@ export const generateTripleWindowGrid = (
   scheduledMatches: MatchData[],
   displayChampions: DFSStats[],
   mokiSpecialties: Record<string, MokiSpecialty>,
-  allStats: DFSStats[],
-  counterMap: any = {}
+  allStats: Record<string, DFSStats>,
+  counterMap: any = {},
+  statsData?: StatsData,
+  statMap?: Record<string, MokiStats>
 ): WindowGridRow[] => {
   return displayChampions.map(champ => {
     const champMatches = scheduledMatches
@@ -183,7 +256,7 @@ export const generateTripleWindowGrid = (
 
     const getWindowPoints = (matchesSlice: MatchData[]) => {
       return matchesSlice.reduce((sum, m) => {
-        const pred = calculatePredictiveAdvantage(m, allStats, mokiSpecialties, counterMap);
+        const pred = calculatePredictiveAdvantage(m, allStats, mokiSpecialties, counterMap, statsData, statMap);
         const isTeamA = m.players.find(p => p.moki_id === champ.moki_id)?.team === 1;
         return sum + (isTeamA ? pred.teamA.pointsExpected : pred.teamB.pointsExpected);
       }, 0);
