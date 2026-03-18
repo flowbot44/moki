@@ -54,6 +54,10 @@ export const calculateStatSynergy = (teamA: MokiStats[], teamB: MokiStats[]) => 
   if (a.wart > b.wart + WART_THRESHOLD) multA *= 9.0; // TANK
   if (b.wart > a.wart + WART_THRESHOLD) multB *= 9.0;
 
+  // Second win condition penalty: one-dimensional elim teams (high STR, low DEF) that earned
+  // an elim multiplier lose some of that edge when the opponent has meaningful wart capability.
+  // Pure bruisers can only win one way; if the opponent can pivot to wart they exploit that.
+
   const scoreA = (a.elim + a.gacha + a.wart) * multA;
   const scoreB = (b.elim + b.gacha + b.wart) * multB;
 

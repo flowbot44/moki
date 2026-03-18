@@ -4,7 +4,7 @@ import { fetchLatest, fetchPartition, DATA_URL } from './utils/data-fetcher';
 import type { MatchData, DFSStats, MokiPlayer, ChampionTrait, Scheme, MokiSpecialty } from './types';
 import type { MokiStats } from './utils/stat-mapper';
 import { calculateDFSPoints } from './utils/dfs-scoring';
-import { generatePredictionGrid, generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
+import { generateTripleWindowGrid, calculatePredictiveAdvantage, generateSynergyGrid } from './utils/predictive-engine';
 import { runTrueBacktest } from './utils/backtest-logic';
 import { filterByScheme, sortByScheme, isChampionInScheme } from './utils/scheme-logic';
 import { scoreMatchup } from './lib/matchupScore';
@@ -14,13 +14,15 @@ import { Zap, Loader2, BarChart3, Binary, LayoutGrid, Target, Activity, Calendar
 type SortKey = 'total_points' | 'win_rate' | 'avg_eliminations' | 'avg_wart' | 'avg_deposits' | 'volatility' | 'momentum';
 type WindowSortKey = 'w1Points' | 'w2Points' | 'w3Points' | 'totalPoints';
 type SynergySortKey = 'w1Synergy' | 'w2Synergy' | 'w3Synergy' | 'totalSynergy';
-type GridMode = 'WINDOWS' | 'MATRIX' | 'SYNERGY';
+type GridMode = 'xDFS' | 'COMPOSITE' | 'SYNERGY';
+type CompositeSortKey = 'w1' | 'w2' | 'w3' | 'total';
 
 const App: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [loading, setLoading] = useState(true);
-  const [gridMode] = useState<GridMode>('SYNERGY');
+  const [gridMode, setGridMode] = useState<GridMode>('COMPOSITE');
+  const [selectedForCash, setSelectedForCash] = useState<string[]>([]);
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [championsStats, setChampionsStats] = useState<DFSStats[]>([]);
   const [allPlayerStats, setAllPlayerStats] = useState<Record<string, DFSStats>>({});
@@ -34,6 +36,7 @@ const App: React.FC = () => {
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'desc' | 'asc' }>({ key: 'total_points', direction: 'desc' });
   const [windowSortConfig, setWindowSortConfig] = useState<{ key: WindowSortKey; direction: 'desc' | 'asc' }>({ key: 'totalPoints', direction: 'desc' });
   const [synergySortConfig, setSynergySortConfig] = useState<{ key: SynergySortKey; direction: 'desc' | 'asc' }>({ key: 'totalSynergy', direction: 'desc' });
+  const [compositeSortConfig, setCompositeSortConfig] = useState<{ key: CompositeSortKey; direction: 'desc' | 'asc' }>({ key: 'total', direction: 'desc' });
   const [minWinRate, setMinWinRate] = useState<number>(0);
   const [selectedSchemeName, setSelectedSchemeName] = useState<string>('');
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('');
@@ -65,13 +68,6 @@ const App: React.FC = () => {
     return <Zap size={12} className="text-[#00ff41] opacity-50" />;
   };
 
-  const getHeatColor = (adv: number) => {
-    if (adv > 10) return 'bg-[#00ff41] text-[#0d0208] font-bold';
-    if (adv > 5) return 'bg-[#00cc34] text-[#0d0208]';
-    if (adv > 0) return 'bg-[#008f25] text-white';
-    if (adv > -5) return 'bg-[#1a331e] text-[#00ff41] opacity-80';
-    return 'bg-[#3d0d0d] text-[#ff3131]';
-  };
 
   const getSynergyHeatColor = (diff: number) => {
     if (diff >= 2) return 'bg-[#00ff41] text-[#0d0208] font-bold';
@@ -86,6 +82,13 @@ const App: React.FC = () => {
     if (points > 3500) return 'bg-[#00ff41] text-[#0d0208] font-bold shadow-[inset_0_0_10px_rgba(0,0,0,0.5)]';
     if (points > 3000) return 'bg-[#00cc34] text-[#0d0208]';
     if (points > 2000) return 'bg-[#008f25] text-white';
+    return 'bg-[#1a331e] text-[#00ff41] opacity-60';
+  };
+
+  const getCompositeHeatColor = (score: number) => {
+    if (score > 75) return 'bg-[#00ff41] text-[#0d0208] font-bold shadow-[inset_0_0_10px_rgba(0,0,0,0.5)]';
+    if (score > 60) return 'bg-[#00cc34] text-[#0d0208]';
+    if (score > 45) return 'bg-[#008f25] text-white';
     return 'bg-[#1a331e] text-[#00ff41] opacity-60';
   };
 
@@ -284,15 +287,6 @@ const App: React.FC = () => {
     return { composition, headToHead };
   }, [matches, mokiSpecialties]);
 
-  const predictionGrid = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const startFilter = targetStartDate || today;
-    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
-    const grid = generatePredictionGrid(allDailyMatches, filteredAndSorted, mokiSpecialties, allPlayerStats, counterMap, statsData);
-    const hasStatSort = selectedScheme && selectedScheme.sortKey;
-    return hasStatSort ? grid : [...grid].sort((a, b) => b.totalXPoints - a.totalXPoints);
-  }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, allPlayerStats, selectedScheme, counterMap, statsData]);
-
   const tripleWindowGrid = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
     const startFilter = targetStartDate || today;
@@ -314,6 +308,77 @@ const App: React.FC = () => {
       return (a[synergySortConfig.key] < b[synergySortConfig.key]) ? -modifier : modifier;
     });
   }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, synergySortConfig, statsData]);
+
+  const compositeGrid = useMemo(() => {
+    const xMap = new Map(tripleWindowGrid.map(r => [r.championName, r]));
+    const sMap = new Map(synergyGrid.map(r => [r.championName, r]));
+    const names = [...new Set([...xMap.keys(), ...sMap.keys()])];
+
+    const raw = names.map(name => {
+      const x = xMap.get(name);
+      const s = sMap.get(name);
+      return {
+        championName: name,
+        xW1: x?.w1Points ?? 0, xW2: x?.w2Points ?? 0, xW3: x?.w3Points ?? 0,
+        sW1: s?.w1Synergy ?? 0, sW2: s?.w2Synergy ?? 0, sW3: s?.w3Synergy ?? 0,
+      };
+    });
+
+    const norm = (val: number, min: number, max: number) =>
+      max === min ? 50 : ((val - min) / (max - min)) * 100;
+
+    const xMin = Math.min(...raw.map(r => Math.min(r.xW1, r.xW2, r.xW3)));
+    const xMax = Math.max(...raw.map(r => Math.max(r.xW1, r.xW2, r.xW3)));
+    const sMin = Math.min(...raw.map(r => Math.min(r.sW1, r.sW2, r.sW3)));
+    const sMax = Math.max(...raw.map(r => Math.max(r.sW1, r.sW2, r.sW3)));
+
+    const rows = raw.map(r => {
+      const w1 = (norm(r.xW1, xMin, xMax) + norm(r.sW1, sMin, sMax)) / 2;
+      const w2 = (norm(r.xW2, xMin, xMax) + norm(r.sW2, sMin, sMax)) / 2;
+      const w3 = (norm(r.xW3, xMin, xMax) + norm(r.sW3, sMin, sMax)) / 2;
+      return { championName: r.championName, w1, w2, w3, total: w1 + w2 + w3 };
+    });
+
+    return [...rows].sort((a, b) => {
+      const mod = compositeSortConfig.direction === 'asc' ? 1 : -1;
+      return (a[compositeSortConfig.key] < b[compositeSortConfig.key]) ? -mod : mod;
+    });
+  }, [tripleWindowGrid, synergyGrid, compositeSortConfig]);
+
+  const cashConflicts = useMemo(() => {
+    if (selectedForCash.length < 2) return {};
+    const today = new Date().toISOString().split('T')[0];
+    const startFilter = targetStartDate || today;
+    const scheduled = matches.filter(m => m.match.match_date === startFilter);
+
+    const champWindows: Record<string, { w1: Set<string>; w2: Set<string>; w3: Set<string> }> = {};
+    selectedForCash.forEach(name => {
+      const champ = championsStats.find(s => s.name === name);
+      if (!champ) return;
+      const ms = scheduled
+        .filter(m => m.players.some(p => p.moki_id === champ.moki_id))
+        .sort((a, b) => a.match.match_id.localeCompare(b.match.match_id));
+      champWindows[name] = {
+        w1: new Set(ms.slice(0, 10).map(m => m.match.match_id)),
+        w2: new Set(ms.slice(10, 20).map(m => m.match.match_id)),
+        w3: new Set(ms.slice(20, 30).map(m => m.match.match_id)),
+      };
+    });
+
+    const conflicts: Record<string, string[]> = {};
+    for (let i = 0; i < selectedForCash.length; i++) {
+      for (let j = i + 1; j < selectedForCash.length; j++) {
+        const a = selectedForCash[i], b = selectedForCash[j];
+        const aw = champWindows[a], bw = champWindows[b];
+        if (!aw || !bw) continue;
+        const hit = (['w1', 'w2', 'w3'] as const)
+          .filter(w => [...aw[w]].some(id => bw[w].has(id)))
+          .map(w => w.toUpperCase());
+        if (hit.length) conflicts[`${a}|${b}`] = hit;
+      }
+    }
+    return conflicts;
+  }, [selectedForCash, matches, targetStartDate, championsStats]);
 
   const [predictionAccuracy, setPredictionAccuracy] = useState<number | null>(null);
   const [highConfAccuracy, setHighConfAccuracy] = useState<number | null>(null);
@@ -337,6 +402,9 @@ const App: React.FC = () => {
   };
   const handleSynergySort = (key: SynergySortKey) => {
     setSynergySortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
+  };
+  const handleCompositeSort = (key: CompositeSortKey) => {
+    setCompositeSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
   };
   const handleSort = (key: SortKey) => {
     setSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
@@ -461,38 +529,59 @@ const App: React.FC = () => {
         } />
         <Route path="/" element={
           <section className="w-full">
-            <div className="terminal-card mb-6 md:mb-8 grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-8 bg-green-900/5 items-center border-double border-4">
+            <div className="terminal-card mb-4 grid grid-cols-2 gap-4 sm:gap-6 bg-green-900/5 border-double border-4 py-3 px-4">
+              {/* Col 1: scheme + role */}
               <div className="flex flex-col gap-2">
-                <label className="text-[10px] font-bold flex items-center gap-2 opacity-70"><Target className="text-cyan-400" size={14} /> SCHEME_FOCUS</label>
-                <select value={selectedSchemeName} onChange={(e) => setSelectedSchemeName(e.target.value)} className="w-full text-xs md:text-sm p-2 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
-                  <option value="">-- ALL_CHAMPIONS --</option>
-                  <optgroup label="[ TRAIT_BASED ]" className="bg-black text-cyan-400">
-                    {groupedSchemes.trait.map(s => <option key={s.name} value={s.name}>{s.name.toUpperCase()}</option>)}
-                  </optgroup>
-                  <optgroup label="[ MATCH_BASED ]" className="bg-black text-yellow-400">
-                    {groupedSchemes.match.map(s => <option key={s.name} value={s.name}>{s.name.toUpperCase()}</option>)}
-                  </optgroup>
-                </select>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold flex items-center gap-1 opacity-70 shrink-0 w-24"><Target className="text-cyan-400" size={12} /> SCHEME</label>
+                  <select value={selectedSchemeName} onChange={(e) => setSelectedSchemeName(e.target.value)} className="flex-1 text-xs p-1.5 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
+                    <option value="">-- ALL --</option>
+                    <optgroup label="[ TRAIT_BASED ]" className="bg-black text-cyan-400">
+                      {groupedSchemes.trait.map(s => <option key={s.name} value={s.name}>{s.name.toUpperCase()}</option>)}
+                    </optgroup>
+                    <optgroup label="[ MATCH_BASED ]" className="bg-black text-yellow-400">
+                      {groupedSchemes.match.map(s => <option key={s.name} value={s.name}>{s.name.toUpperCase()}</option>)}
+                    </optgroup>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold flex items-center gap-1 opacity-70 shrink-0 w-24"><UserSearch className="text-yellow-400" size={12} /> ROLE</label>
+                  <select value={selectedSpecialty} onChange={(e) => setSelectedSpecialty(e.target.value)} className="flex-1 text-xs p-1.5 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
+                    <option value="">-- ALL_ROLES --</option>
+                    <option value="ELIM_SPECIALIST">ELIMINATORS</option>
+                    <option value="GACHA_SPECIALIST">DEPOSITERS</option>
+                    <option value="WART_SPECIALIST">WART_RIDERS</option>
+                    <option value="BALANCED">SUPPORT</option>
+                  </select>
+                </div>
               </div>
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] font-bold flex items-center gap-2 opacity-70"><UserSearch className="text-yellow-400" size={14} /> ROLE_FILTER</label>
-                <select value={selectedSpecialty} onChange={(e) => setSelectedSpecialty(e.target.value)} className="w-full text-xs md:text-sm p-2 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
-                  <option value="">-- ALL_ROLES --</option>
-                  <option value="ELIM_SPECIALIST">ELIMINATORS</option>
-                  <option value="GACHA_SPECIALIST">DEPOSITERS</option>
-                  <option value="WART_SPECIALIST">WART_RIDERS</option>
-                  <option value="BALANCED">SUPPORT</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] font-bold opacity-70 uppercase">Win_Rate_Threshold (%)</label>
+              {/* Col 2: win rate slider */}
+              <div className="flex flex-col justify-center gap-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold opacity-70 uppercase">Win_Rate_Threshold</label>
+                  <span className="text-[11px] font-black font-mono text-terminal-green">{minWinRate}%</span>
+                </div>
                 <input type="range" min="0" max="100" step="5" value={minWinRate} onChange={(e) => setMinWinRate(Number(e.target.value))} className="w-full accent-terminal-green" />
-                <div className="text-right text-[10px] font-mono">{minWinRate}% MIN_WR</div>
+                <div className="flex justify-between text-[9px] font-mono opacity-40">
+                  <span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
+                </div>
               </div>
             </div>
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 border-b border-terminal-green pb-2 px-2 gap-4">
               <div className="flex items-center gap-4 flex-wrap">
               <h2 className="text-lg md:text-xl flex items-center gap-2 text-terminal-green font-black uppercase"><Binary className="text-cyan-400" size={20} /> WIN_PROBABILITY // MATCHUP_MATRIX</h2>
+              <div className="flex gap-1">
+                {(['COMPOSITE', 'SYNERGY', 'xDFS'] as GridMode[]).map(mode => (
+                  <button key={mode} onClick={() => setGridMode(mode)} className={`text-[9px] font-mono px-2 py-0.5 border transition-colors ${gridMode === mode ? 'border-terminal-green bg-green-900/40 text-terminal-green' : 'border-green-900/40 text-green-700 hover:border-green-700'}`}>
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              <div className="text-[9px] font-mono opacity-60 border-l border-green-900/30 pl-3">
+                {gridMode === 'COMPOSITE' && <span><span className="text-terminal-green">COMPOSITE</span> — blends xDFS + SYNERGY, normalized 0–100. Best single ranking for cash picks.</span>}
+                {gridMode === 'SYNERGY' && <span><span className="text-cyan-400">SYNERGY</span> — role composition matchup edge (E/D/W/S). Favors teams with structural archetype advantages vs opponents.</span>}
+                {gridMode === 'xDFS' && <span><span className="text-yellow-400">xDFS</span> — expected DFS pts per window (win prob × 300 + avg stat scoring). Favors high-scoring depositors &amp; eliminators.</span>}
+              </div>
               <div className="flex gap-2">
                 <div className="text-[10px] font-mono border border-cyan-900 px-2 py-0.5 bg-cyan-950/20 text-cyan-400">
                   {predictionAccuracy !== null ? `TOTAL_ACC: ${predictionAccuracy.toFixed(1)}%` : 'CALCULATING...'}
@@ -509,8 +598,46 @@ const App: React.FC = () => {
                 </select>
               </div>
             </div>
+            {/* Cash Game Lineup Builder */}
+            {gridMode === 'COMPOSITE' && (
+              <div className="mb-4 terminal-card border-yellow-900/50 bg-yellow-950/10">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[10px] font-black uppercase text-yellow-400 flex items-center gap-2">
+                    <Target size={12} /> CASH_LINEUP_BUILDER <span className="font-normal opacity-60 text-[9px]">— click + to select up to 4 champions</span>
+                  </div>
+                  {selectedForCash.length > 0 && (
+                    <button onClick={() => setSelectedForCash([])} className="text-[9px] font-mono border border-red-900/50 text-red-500 px-2 py-0.5 hover:bg-red-950/30">CLEAR</button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                  {[0, 1, 2, 3].map(i => {
+                    const name = selectedForCash[i];
+                    return (
+                      <div key={i} className={`border p-2 text-[10px] font-mono min-h-[40px] flex items-center ${name ? 'border-terminal-green bg-green-950/20 text-terminal-green' : 'border-green-900/30 text-green-900'}`}>
+                        {name ? <><span className="opacity-40 mr-1">{i+1}.</span>{name}</> : <span className="opacity-30">SLOT {i+1}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {Object.keys(cashConflicts).length > 0 ? (
+                  <div className="border border-red-900/50 bg-red-950/20 p-2">
+                    <div className="text-[9px] font-black text-red-400 uppercase mb-1">⚠ CONFLICTS DETECTED — these pairs face each other (guaranteed split):</div>
+                    {Object.entries(cashConflicts).map(([pair, windows]) => (
+                      <div key={pair} className="text-[9px] font-mono text-red-300 flex items-center gap-2">
+                        <span>{pair.replace('|', ' vs ')}</span>
+                        <span className="opacity-60">in {windows.join(', ')}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : selectedForCash.length >= 2 ? (
+                  <div className="text-[9px] font-mono text-terminal-green border border-green-900/30 px-2 py-1">✓ NO CONFLICTS — all selected champions have independent match outcomes</div>
+                ) : (
+                  <div className="text-[9px] font-mono opacity-30">Select 2+ champions to check for schedule conflicts</div>
+                )}
+              </div>
+            )}
             <div className="terminal-card !p-0 border-t-0 shadow-lg w-full overflow-x-auto custom-scrollbar">
-              {gridMode === 'WINDOWS' ? (
+              {gridMode === 'xDFS' ? (
                 <table className="w-full border-collapse font-mono text-[10px] md:text-xs">
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
@@ -546,51 +673,52 @@ const App: React.FC = () => {
                     })}
                   </tbody>
                 </table>
-              ) : gridMode === 'MATRIX' ? (
+              ) : gridMode === 'COMPOSITE' ? (
                 <table className="w-full border-collapse font-mono text-[10px] md:text-xs">
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
-                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-0 bg-black border-r border-terminal-green z-20">Champion_ID</th>
-                      {[...Array(10)].map((_, i) => (<th key={i} className="p-3 md:p-4 border-r border-green-900/30 min-w-[50px]">M{i+1}</th>))}
-                      <th className="p-3 md:p-4 bg-green-900/40 font-black min-w-[80px]">TOTAL</th>
+                      <th className="p-2 w-8 sticky left-0 bg-black border-r border-green-900/40 z-20"></th>
+                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[220px] sticky left-8 bg-black border-r border-terminal-green z-20">Champion_ID</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleCompositeSort('w1')}>W1_1_UTC {compositeSortConfig.key === 'w1' && <span className="text-cyan-400">{compositeSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleCompositeSort('w2')}>W2_9_UTC {compositeSortConfig.key === 'w2' && <span className="text-cyan-400">{compositeSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleCompositeSort('w3')}>W3_17_UTC {compositeSortConfig.key === 'w3' && <span className="text-cyan-400">{compositeSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
+                      <th className="p-3 md:p-4 bg-green-900/40 font-black cursor-pointer hover:bg-green-900/60 min-w-[100px]" onClick={() => handleCompositeSort('total')}>EDGE_SCORE {compositeSortConfig.key === 'total' && <span className="text-cyan-400">{compositeSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {predictionGrid.map((row) => {
+                    {compositeGrid.map((row) => {
                       const champ = championsStats.find(s => s.name === row.championName);
-                      const champStats = statMap[champ?.token_id?.toString() || ''];
-                      const isBully = champStats && champStats.strength > 210;
-                      const isScorer = champStats && champStats.dexterity > 210;
-
+                      const isSelected = selectedForCash.includes(row.championName);
+                      const toggleSelect = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setSelectedForCash(prev =>
+                          prev.includes(row.championName)
+                            ? prev.filter(n => n !== row.championName)
+                            : prev.length < 4 ? [...prev, row.championName] : prev
+                        );
+                      };
                       return (
-                        <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
-                          <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
-                            <div className="flex items-center gap-2">
-                              <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
-                              {isBully && <span className="text-[7px] bg-red-950 text-red-500 border border-red-900 px-1 rounded px-1 leading-tight">BULLY</span>}
-                              {isScorer && <span className="text-[7px] bg-cyan-950 text-cyan-500 border border-cyan-900 px-1 rounded px-1 leading-tight">SCORER</span>}
-                            </div>
-                            <div className="flex flex-wrap gap-1 mt-1">
+                        <tr key={row.championName} className={`border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap ${isSelected ? 'bg-green-950/30' : ''}`}>
+                          <td className="p-1 w-8 text-center sticky left-0 border-r border-green-900/40 z-10" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }}>
+                            <button onClick={toggleSelect} className={`w-5 h-5 border text-[9px] font-black flex items-center justify-center transition-colors mx-auto ${isSelected ? 'border-terminal-green bg-terminal-green text-black' : 'border-green-900 text-green-900 hover:border-green-600'}`}>
+                              {isSelected ? selectedForCash.indexOf(row.championName) + 1 : '+'}
+                            </button>
+                          </td>
+                          <td className="p-3 md:p-4 sticky left-8 border-r border-terminal-green z-10 whitespace-nowrap" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }}>
+                            <div className="font-bold text-xs md:text-sm cursor-pointer hover:text-terminal-green" onClick={() => handleSelectChampion(champ?.moki_id || '')}>{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
+                            <div className="flex flex-wrap gap-1 mt-0.5">
                               {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
                                 <React.Fragment key={s.name}>
-                                  <span className="text-[8px] text-cyan-400 uppercase leading-none py-0.5">{s.name.split(' ')[0]}</span>
+                                  <span className="text-[8px] text-cyan-400 uppercase leading-none">{s.name.split(' ')[0]}</span>
                                   {idx < arr.length - 1 && <span className="text-cyan-900 text-[8px] self-center">|</span>}
                                 </React.Fragment>
                               ))}
                             </div>
                           </td>
-                          {row.matches.map((m, i) => {
-                            const isHighConf = m.adv > 10 || m.adv < -10; // Corresponds to >60% or <40%
-                            return (
-                              <td key={i} onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-2 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 relative ${getHeatColor(m.adv)}`}>
-                                {isHighConf && <div className="absolute top-0 right-0 bg-yellow-400 w-1.5 h-1.5 rounded-bl-sm shadow-[0_0_5px_rgba(250,204,21,0.5)]"></div>}
-                                <div className="truncate w-full max-w-[40px] md:max-w-[60px] mx-auto opacity-50 text-[7px] md:text-[8px]">{m.oppName.split(' ')[0]}</div>
-                                <div className="font-bold text-[10px] md:text-sm">{m.xPoints.toFixed(0)}</div>
-                              </td>
-                            );
-                          })}
-                          {[...Array(Math.max(0, 10 - row.matches.length))].map((_, i) => (<td key={i + row.matches.length} className="p-2 border-r border-green-900/10 opacity-10 text-center">N/A</td>))}
-                          <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className="p-3 md:p-4 font-bold text-center text-[10px] md:text-sm positive bg-green-950/10 cursor-pointer hover:bg-green-900/20">+{row.totalXPoints.toFixed(0)}</td>
+                          <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getCompositeHeatColor(row.w1)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w1.toFixed(0)}</div></td>
+                          <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getCompositeHeatColor(row.w2)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w2.toFixed(0)}</div></td>
+                          <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className={`p-4 md:p-6 border-r border-green-900/10 text-center transition-all cursor-pointer hover:brightness-125 ${getCompositeHeatColor(row.w3)}`}><div className="text-lg md:text-2xl font-black tracking-widest">{row.w3.toFixed(0)}</div></td>
+                          <td onClick={() => handleSelectChampion(champ?.moki_id || '')} className="p-3 md:p-4 font-bold text-center text-sm md:text-lg positive border-l border-green-900/30 bg-green-950/10 cursor-pointer hover:bg-green-900/20">{row.total.toFixed(0)}</td>
                         </tr>
                       );
                     })}
@@ -634,6 +762,7 @@ const App: React.FC = () => {
                 </table>
               )}
             </div>
+
           </section>
         } />
         <Route path="/champion/:mokiId" element={
