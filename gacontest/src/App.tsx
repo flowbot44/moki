@@ -309,41 +309,57 @@ const App: React.FC = () => {
     });
   }, [matches, targetStartDate, filteredAndSorted, mokiSpecialties, synergySortConfig, statsData]);
 
-  const compositeGrid = useMemo(() => {
-    const xMap = new Map(tripleWindowGrid.map(r => [r.championName, r]));
-    const sMap = new Map(synergyGrid.map(r => [r.championName, r]));
-    const names = [...new Set([...xMap.keys(), ...sMap.keys()])];
+  // Unfiltered grids used only for stable normalization — scores must not shift when filters change
+  const allChampionsWindowGrid = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const startFilter = targetStartDate || today;
+    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
+    return generateTripleWindowGrid(allDailyMatches, championsStats, mokiSpecialties, allPlayerStats, counterMap, statsData);
+  }, [matches, targetStartDate, championsStats, mokiSpecialties, allPlayerStats, counterMap, statsData]);
 
-    const raw = names.map(name => {
-      const x = xMap.get(name);
-      const s = sMap.get(name);
-      return {
-        championName: name,
-        xW1: x?.w1Points ?? 0, xW2: x?.w2Points ?? 0, xW3: x?.w3Points ?? 0,
-        sW1: s?.w1Synergy ?? 0, sW2: s?.w2Synergy ?? 0, sW3: s?.w3Synergy ?? 0,
-      };
-    });
+  const allChampionsSynergyGrid = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const startFilter = targetStartDate || today;
+    const allDailyMatches = matches.filter(m => m.match.match_date === startFilter);
+    return generateSynergyGrid(allDailyMatches, championsStats, mokiSpecialties, statsData);
+  }, [matches, targetStartDate, championsStats, mokiSpecialties, statsData]);
+
+  const compositeGrid = useMemo(() => {
+    // Normalize over ALL champions so scores are stable regardless of active filter
+    const xMapAll = new Map(allChampionsWindowGrid.map(r => [r.championName, r]));
+    const sMapAll = new Map(allChampionsSynergyGrid.map(r => [r.championName, r]));
+    const allNames = [...new Set([...xMapAll.keys(), ...sMapAll.keys()])];
+
+    const allRaw = allNames.map(name => ({
+      championName: name,
+      xW1: xMapAll.get(name)?.w1Points ?? 0, xW2: xMapAll.get(name)?.w2Points ?? 0, xW3: xMapAll.get(name)?.w3Points ?? 0,
+      sW1: sMapAll.get(name)?.w1Synergy ?? 0, sW2: sMapAll.get(name)?.w2Synergy ?? 0, sW3: sMapAll.get(name)?.w3Synergy ?? 0,
+    }));
 
     const norm = (val: number, min: number, max: number) =>
       max === min ? 50 : ((val - min) / (max - min)) * 100;
 
-    const xMin = Math.min(...raw.map(r => Math.min(r.xW1, r.xW2, r.xW3)));
-    const xMax = Math.max(...raw.map(r => Math.max(r.xW1, r.xW2, r.xW3)));
-    const sMin = Math.min(...raw.map(r => Math.min(r.sW1, r.sW2, r.sW3)));
-    const sMax = Math.max(...raw.map(r => Math.max(r.sW1, r.sW2, r.sW3)));
+    const xMin = Math.min(...allRaw.map(r => Math.min(r.xW1, r.xW2, r.xW3)));
+    const xMax = Math.max(...allRaw.map(r => Math.max(r.xW1, r.xW2, r.xW3)));
+    const sMin = Math.min(...allRaw.map(r => Math.min(r.sW1, r.sW2, r.sW3)));
+    const sMax = Math.max(...allRaw.map(r => Math.max(r.sW1, r.sW2, r.sW3)));
 
-    const rows = raw.map(r => {
-      const w1 = (norm(r.xW1, xMin, xMax) + norm(r.sW1, sMin, sMax)) / 2;
-      const w2 = (norm(r.xW2, xMin, xMax) + norm(r.sW2, sMin, sMax)) / 2;
-      const w3 = (norm(r.xW3, xMin, xMax) + norm(r.sW3, sMin, sMax)) / 2;
-      return { championName: r.championName, w1, w2, w3, total: w1 + w2 + w3 };
-    });
+    // Score all champions, then filter to only show the currently filtered set
+    const visibleNames = new Set(filteredAndSorted.map(s => s.name));
+    const rows = allRaw
+      .filter(r => visibleNames.has(r.championName))
+      .map(r => {
+        const w1 = (norm(r.xW1, xMin, xMax) + norm(r.sW1, sMin, sMax)) / 2;
+        const w2 = (norm(r.xW2, xMin, xMax) + norm(r.sW2, sMin, sMax)) / 2;
+        const w3 = (norm(r.xW3, xMin, xMax) + norm(r.sW3, sMin, sMax)) / 2;
+        return { championName: r.championName, w1, w2, w3, total: w1 + w2 + w3 };
+      });
 
     return [...rows].sort((a, b) => {
       const mod = compositeSortConfig.direction === 'asc' ? 1 : -1;
       return (a[compositeSortConfig.key] < b[compositeSortConfig.key]) ? -mod : mod;
     });
-  }, [tripleWindowGrid, synergyGrid, compositeSortConfig]);
+  }, [allChampionsWindowGrid, allChampionsSynergyGrid, filteredAndSorted, compositeSortConfig]);
 
   const cashConflicts = useMemo(() => {
     if (selectedForCash.length < 2) return {};
