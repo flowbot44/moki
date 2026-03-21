@@ -56,7 +56,7 @@ export const calculatePredictiveAdvantage = (
       statScore = compareTeamStats(myTeamStats, oppTeamStats);
     }
 
-    return (teamWR * 0.70) + (statScore * 0.30);
+    return (teamWR * 0.60) + (statScore * 0.40);
   };
 
   const scoreA = getTeamScore(teamA, teamB);
@@ -137,10 +137,10 @@ export const calculatePredictiveAdvantage = (
     winProbabilityA = winProbabilityA * 0.90 + (perfScore * 100) * 0.10;
   }
 
-  // Team 1 (A) structural advantage: wins ~60% of matches historically.
-  // Shift center to 62%, amplify stat+H2H signal at 1.5x.
+  // No structural team position advantage — team 1/2 are arbitrary labels.
+  // Center at 50%, let composition/class/H2H signal drive the result.
   const statSignal = winProbabilityA - 50;
-  const finalProbA = Math.max(2, Math.min(98, 62 + statSignal * 1.5));
+  const finalProbA = Math.max(2, Math.min(98, 50 + statSignal * 1.1));
   const finalProbB = 100 - finalProbA;
 
   const calculatePoints = (prob: number, players: MokiPlayer[]) => {

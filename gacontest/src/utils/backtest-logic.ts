@@ -31,7 +31,8 @@ const getRoleChar = (spec: MokiSpecialty): Role => {
 export const runTrueBacktest = (
   matches: MatchData[],
   mokiSpecialties: Record<string, MokiSpecialty>,
-  statMap?: Record<string, MokiStats>
+  statMap?: Record<string, MokiStats>,
+  evalAfter?: string // ISO date string — build history for all, only score matches after this date
 ): BacktestResult => {
   const sortedMatches = [...matches].sort((a, b) => a.match.match_id.localeCompare(b.match.match_id));
   
@@ -67,7 +68,10 @@ export const runTrueBacktest = (
     const gamesA = statsMap[champA?.moki_id || '']?.games_played || 0;
     const gamesB = statsMap[champB?.moki_id || '']?.games_played || 0;
 
-    if (gamesA >= 15 && gamesB >= 15) {
+    const matchDate = m.match.match_date ? m.match.match_date.slice(0, 10) : '';
+    const inEvalWindow = !evalAfter || matchDate >= evalAfter;
+
+    if (gamesA >= 15 && gamesB >= 15 && inEvalWindow) {
       const pred = calculatePredictiveAdvantage(m, statsMap, mokiSpecialties, counterMap, statsData, statMap);
       const probA = pred.teamA.winProbability / 100;
       const actualA = m.match.team_won === 1 ? 1 : 0;

@@ -139,7 +139,7 @@
   {
     "name": "Call to Arms",
     "description": "25 points for EACH Ronin or Samurai trait in lineup",
-    "traits": ["Ronin", "Samurai"]
+    "exactTraits": ["Ronin", "Samurai"]
   },
   {
     "name": "Malicious Intent",

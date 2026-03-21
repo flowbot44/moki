@@ -7,7 +7,8 @@ export interface MokiStats {
 }
 
 /**
- * v5.3 - High-Impact Archetype Engine
+ * v5.4 - Post-patch recalibration (2026-03-17)
+ * Reduced multipliers after Moki class-awareness update caused overconfidence.
  */
 
 export const calculateStatSynergy = (teamA: MokiStats[], teamB: MokiStats[]) => {
@@ -21,11 +22,15 @@ export const calculateStatSynergy = (teamA: MokiStats[], teamB: MokiStats[]) => 
       fort: team.reduce((s, m) => s + (m.fortitude || 0), 0) / 3,
     };
 
-    // Data analysis: elim wins → STR dominant (+33.6), SPD negatively correlated (-18.0, removed)
-    const elim = (avg.str * 0.85) + (avg.def * 0.1) + (avg.fort * 0.05);
-    // Gacha: DEX+71.7, FORT+28.1 positive
-    const gacha = (avg.dex * 0.7) + (avg.fort * 0.3);
-    // Wart: DEF+94, STR+49 dominate
+    // STR = Buff form movement speed (primary combat stat)
+    // DEF = Buff transformation time + Wart riding speed.
+    //       Higher DEF → faster into Buff form → more elim opportunities.
+    //       Contributes to both ELIM and WART.
+    // FORT = respawn time + deposit speed
+    const elim = (avg.str * 0.75) + (avg.def * 0.20) + (avg.fort * 0.05);
+    // Gacha: DEX (carry speed) + FORT (deposit speed + respawn)
+    const gacha = (avg.dex * 0.65) + (avg.fort * 0.35);
+    // Wart: DEF (riding speed) dominant, STR secondary
     const wart = (avg.def * 0.65) + (avg.str * 0.35);
 
     return { elim, gacha, wart };
@@ -38,21 +43,21 @@ export const calculateStatSynergy = (teamA: MokiStats[], teamB: MokiStats[]) => 
   let multA = 1.0;
   let multB = 1.0;
 
-  // Archetype advantage thresholds (tuned from data analysis)
-  // Elim threshold lowered: avg STR diff for elim winners is ~29 (under old 40 threshold)
-  const ELIM_THRESHOLD = 20;
-  const GACHA_THRESHOLD = 25;
-  const WART_THRESHOLD = 35;
+  // Archetype advantage thresholds (v5.4 — recalibrated post-patch 2026-03-17)
+  // Mokis now commit more decisively to class objectives, so advantages are real
+  // but the extreme multipliers caused overconfidence (85% predicted → 64% actual)
+  const ELIM_THRESHOLD = 25;
+  const GACHA_THRESHOLD = 30;
+  const WART_THRESHOLD = 45;
 
-  if (a.elim > b.elim + ELIM_THRESHOLD) multA *= 1.4; // BULLY
-  if (b.elim > a.elim + ELIM_THRESHOLD) multB *= 1.4;
+  if (a.elim > b.elim + ELIM_THRESHOLD) multA *= 1.3; // BULLY
+  if (b.elim > a.elim + ELIM_THRESHOLD) multB *= 1.3;
 
-  // Gacha/Wart advantages are decisive (DEX+71, DEF+94 in data) — higher multipliers
-  if (a.gacha > b.gacha + GACHA_THRESHOLD) multA *= 1.8; // SCORER
-  if (b.gacha > a.gacha + GACHA_THRESHOLD) multB *= 1.8;
+  if (a.gacha > b.gacha + GACHA_THRESHOLD) multA *= 1.4; // SCORER
+  if (b.gacha > a.gacha + GACHA_THRESHOLD) multB *= 1.4;
 
-  if (a.wart > b.wart + WART_THRESHOLD) multA *= 9.0; // TANK
-  if (b.wart > a.wart + WART_THRESHOLD) multB *= 9.0;
+  if (a.wart > b.wart + WART_THRESHOLD) multA *= 2.5; // TANK
+  if (b.wart > a.wart + WART_THRESHOLD) multB *= 2.5;
 
   // Second win condition penalty: one-dimensional elim teams (high STR, low DEF) that earned
   // an elim multiplier lose some of that edge when the opponent has meaningful wart capability.

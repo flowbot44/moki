@@ -30,6 +30,7 @@ const App: React.FC = () => {
   const [schemes, setSchemes] = useState<Scheme[]>([]);
   const [counterMap, setCounterMap] = useState<Record<string, { wins: number; games: number }>>({});
   const [mokiSpecialties, setMokiSpecialties] = useState<Record<string, MokiSpecialty>>({});
+  const [classMap, setClassMap] = useState<Record<string, string>>({});
   const [statMap, setStatMap] = useState<Record<string, MokiStats>>({});
   const [error, setError] = useState<string | null>(null);
   
@@ -40,26 +41,28 @@ const App: React.FC = () => {
   const [minWinRate, setMinWinRate] = useState<number>(0);
   const [selectedSchemeName, setSelectedSchemeName] = useState<string>('');
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('');
+  const [selectedClass, setSelectedClass] = useState<string>('');
   const [targetStartDate, setTargetStartDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
   const getChampionTraitSchemes = (name: string) => {
     return schemes.filter(s => (s.traits || s.exactTraits) && isChampionInScheme(name, s, championTraits));
   };
 
-  const getChampSpecialtyLabel = (mokiId: string) => {
+  const getChampTokenId = (mokiId: string): number | undefined => {
     const stats = championsStats.find(s => s.moki_id === mokiId);
-    let tokenId = stats?.token_id;
-    if (!tokenId) {
-      const champMatch = matches.find(m => m.players.some(p => p.moki_id === mokiId && p.is_champion));
-      const player = champMatch?.players.find(p => p.moki_id === mokiId);
-      tokenId = player?.token_id;
-    }
+    if (stats?.token_id) return stats.token_id;
+    const player = matches.find(m => m.players.some(p => p.moki_id === mokiId && p.is_champion))
+      ?.players.find(p => p.moki_id === mokiId);
+    return player?.token_id;
+  };
+
+  const getChampSpecialtyLabel = (mokiId: string) => {
+    const tokenId = getChampTokenId(mokiId);
     if (!tokenId) return 'N/A';
+    const cls  = classMap[tokenId.toString()] || '';
     const spec = mokiSpecialties[tokenId.toString()];
-    if (spec === 'ELIM_SPECIALIST') return 'ELIM';
-    if (spec === 'GACHA_SPECIALIST') return 'DEPO';
-    if (spec === 'WART_SPECIALIST') return 'WART';
-    return 'SUPP';
+    const role = spec === 'ELIM_SPECIALIST' ? 'ELIM' : spec === 'GACHA_SPECIALIST' ? 'DEPO' : spec === 'WART_SPECIALIST' ? 'WART' : 'SUPP';
+    return cls ? `${cls.toUpperCase()} - ${role}` : role;
   };
 
   const getVolatilityIcon = (vol: number) => {
@@ -107,22 +110,49 @@ const App: React.FC = () => {
         setChampionTraits(traits);
         setSchemes(schemeList);
 
+        const CLASS_TO_SPECIALTY: Record<string, MokiSpecialty> = {
+          'Bruiser':  'ELIM_SPECIALIST',
+          'Center':   'ELIM_SPECIALIST',
+          'Flanker':  'ELIM_SPECIALIST',
+          'Striker':  'GACHA_SPECIALIST',
+          'Grinder':  'GACHA_SPECIALIST',
+          'Forward':  'GACHA_SPECIALIST',
+          'Defender': 'WART_SPECIALIST',
+          'Anchor':   'WART_SPECIALIST',
+          'Support':  'BALANCED',
+          'Sprinter': 'BALANCED',
+        };
+
         const specialties: Record<string, MokiSpecialty> = {};
         const stats: Record<string, MokiStats> = {};
+        const classes: Record<string, string> = {};
         mokiBaseStats.data.forEach((m: any) => {
-          const str = m.totals.strength || 0;
-          const dex = m.totals.dexterity || 0;
-          const def = m.totals.defense || 0;
-          const spd = m.totals.speed || 0;
-          const fort = m.totals.fortitude || 0;
-          
-          stats[m.tokenId.toString()] = { strength: str, dexterity: dex, defense: def, speed: spd, fortitude: fort };
+          const str  = m.totals.strength   || 0;
+          const dex  = m.totals.dexterity  || 0;
+          const def  = m.totals.defense    || 0;
+          const spd  = m.totals.speed      || 0;
+          const fort = m.totals.fortitude  || 0;
 
-          const sorted = [{ type: 'ELIM_SPECIALIST', val: str }, { type: 'GACHA_SPECIALIST', val: dex }, { type: 'WART_SPECIALIST', val: def }].sort((a, b) => b.val - a.val);
-          if (Math.abs(sorted[0].val - sorted[1].val) <= 5) specialties[m.tokenId.toString()] = 'BALANCED';
-          else specialties[m.tokenId.toString()] = sorted[0].type as MokiSpecialty;
+          stats[m.tokenId.toString()]   = { strength: str, dexterity: dex, defense: def, speed: spd, fortitude: fort };
+          classes[m.tokenId.toString()] = m.class || '';
+
+          // Base mapping from class name
+          let specialty: MokiSpecialty = CLASS_TO_SPECIALTY[m.class] ?? 'BALANCED';
+
+          // Stat-conditional overrides:
+          // Grinder — ELIM if STR > DEX, otherwise GACHA (deposit runner)
+          if (m.class === 'Grinder') specialty = str > dex ? 'ELIM_SPECIALIST' : 'GACHA_SPECIALIST';
+          // Defender — WART if DEF > STR, otherwise ELIM (combat-oriented build)
+          if (m.class === 'Defender') specialty = def > str ? 'WART_SPECIALIST' : 'ELIM_SPECIALIST';
+          // Sprinter — WART if DEF > DEX, GACHA if DEX > DEF
+          if (m.class === 'Sprinter') specialty = def > dex ? 'WART_SPECIALIST' : 'GACHA_SPECIALIST';
+
+          // winsByType removed — it's team-dependent, not moki-dependent.
+          // A GACHA moki on an ELIM-heavy team logs elim wins, which misclassifies its role.
+          specialties[m.tokenId.toString()] = specialty;
         });
         setMokiSpecialties(specialties);
+        setClassMap(classes);
         setStatMap(stats);
 
         const activePartitions = latest.partitions.filter((p: any) => p.match_count > 0).slice(-7);
@@ -250,14 +280,13 @@ const App: React.FC = () => {
   const filteredAndSorted = useMemo(() => {
     let result = championsStats.filter(s => s.win_rate >= minWinRate);
     if (selectedScheme) result = filterByScheme(result, selectedScheme, championTraits);
-    if (selectedSpecialty) {
-      result = result.filter(s => mokiSpecialties[s.token_id.toString()] === selectedSpecialty);
-    }
+    if (selectedSpecialty) result = result.filter(s => mokiSpecialties[s.token_id.toString()] === selectedSpecialty);
+    if (selectedClass)    result = result.filter(s => classMap[s.token_id.toString()] === selectedClass);
     return selectedScheme ? sortByScheme(result, selectedScheme) : [...result].sort((a, b) => {
       const modifier = sortConfig.direction === 'asc' ? 1 : -1;
       return (a[sortConfig.key] < b[sortConfig.key]) ? -modifier : modifier;
     });
-  }, [championsStats, selectedScheme, selectedSpecialty, minWinRate, championTraits, sortConfig, mokiSpecialties]);
+  }, [championsStats, selectedScheme, selectedSpecialty, selectedClass, minWinRate, championTraits, sortConfig, mokiSpecialties, classMap]);
 
   const statsData = useMemo<StatsData>(() => {
     const composition: Record<string, { wins: number; games: number }> = {};
@@ -432,7 +461,7 @@ const App: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen text-terminal-green font-mono">
-        <div className="text-2xl animate-pulse"><Loader2 className="animate-spin inline mr-2" /> BOOTING_SYSTEM_v5.1...</div>
+        <div className="text-2xl animate-pulse"><Loader2 className="animate-spin inline mr-2" /> BOOTING_SYSTEM_v5.2...</div>
       </div>
     );
   }
@@ -492,6 +521,22 @@ const App: React.FC = () => {
                   <option value="GACHA_SPECIALIST">DEPOSITERS</option>
                   <option value="WART_SPECIALIST">WART_RIDERS</option>
                   <option value="BALANCED">SUPPORT</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] font-bold flex items-center gap-2 opacity-70"><UserSearch className="text-cyan-400" size={14} /> CLASS_FILTER</label>
+                <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)} className="w-full text-xs md:text-sm p-2 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
+                  <option value="">-- ALL_CLASSES --</option>
+                  <option value="Bruiser">BRUISER</option>
+                  <option value="Center">CENTER</option>
+                  <option value="Flanker">FLANKER</option>
+                  <option value="Striker">STRIKER</option>
+                  <option value="Grinder">GRINDER</option>
+                  <option value="Forward">FORWARD</option>
+                  <option value="Defender">DEFENDER</option>
+                  <option value="Anchor">ANCHOR</option>
+                  <option value="Support">SUPPORT</option>
+                  <option value="Sprinter">SPRINTER</option>
                 </select>
               </div>
               <div className="flex flex-col gap-2">
@@ -570,6 +615,22 @@ const App: React.FC = () => {
                     <option value="BALANCED">SUPPORT</option>
                   </select>
                 </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold flex items-center gap-1 opacity-70 shrink-0 w-24"><UserSearch className="text-cyan-400" size={12} /> CLASS</label>
+                  <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)} className="flex-1 text-xs p-1.5 font-mono border border-terminal-green bg-black text-terminal-green outline-none">
+                    <option value="">-- ALL_CLASSES --</option>
+                    <option value="Bruiser">BRUISER</option>
+                    <option value="Center">CENTER</option>
+                    <option value="Flanker">FLANKER</option>
+                    <option value="Striker">STRIKER</option>
+                    <option value="Grinder">GRINDER</option>
+                    <option value="Forward">FORWARD</option>
+                    <option value="Defender">DEFENDER</option>
+                    <option value="Anchor">ANCHOR</option>
+                    <option value="Support">SUPPORT</option>
+                    <option value="Sprinter">SPRINTER</option>
+                  </select>
+                </div>
               </div>
               {/* Col 2: win rate slider */}
               <div className="flex flex-col justify-center gap-1">
@@ -614,9 +675,8 @@ const App: React.FC = () => {
                 </select>
               </div>
             </div>
-            {/* Cash Game Lineup Builder */}
-            {gridMode === 'COMPOSITE' && (
-              <div className="mb-4 terminal-card border-yellow-900/50 bg-yellow-950/10">
+            {/* Cash Game Lineup Builder — all grid modes */}
+            <div className="mb-4 terminal-card border-yellow-900/50 bg-yellow-950/10">
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-[10px] font-black uppercase text-yellow-400 flex items-center gap-2">
                     <Target size={12} /> CASH_LINEUP_BUILDER <span className="font-normal opacity-60 text-[9px]">— click + to select up to 4 champions</span>
@@ -651,13 +711,13 @@ const App: React.FC = () => {
                   <div className="text-[9px] font-mono opacity-30">Select 2+ champions to check for schedule conflicts</div>
                 )}
               </div>
-            )}
             <div className="terminal-card !p-0 border-t-0 shadow-lg w-full overflow-x-auto custom-scrollbar">
               {gridMode === 'xDFS' ? (
                 <table className="w-full border-collapse font-mono text-[10px] md:text-xs">
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
-                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-0 bg-black border-r border-terminal-green z-20">Champion_ID</th>
+                      <th className="p-2 w-8 sticky left-0 bg-black border-r border-green-900/40 z-20"></th>
+                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-8 bg-black border-r border-terminal-green z-20">Champion_ID</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w1Points')}>W1_1_UTC {windowSortConfig.key === 'w1Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w2Points')}>W2_9_UTC {windowSortConfig.key === 'w2Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleWindowSort('w3Points')}>W3_17_UTC {windowSortConfig.key === 'w3Points' && <span className="text-cyan-400">{windowSortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
@@ -667,9 +727,23 @@ const App: React.FC = () => {
                   <tbody>
                     {tripleWindowGrid.map((row) => {
                       const champ = championsStats.find(s => s.name === row.championName);
+                      const isSelected = selectedForCash.includes(row.championName);
+                      const toggleSelect = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setSelectedForCash(prev =>
+                          prev.includes(row.championName)
+                            ? prev.filter(n => n !== row.championName)
+                            : prev.length < 4 ? [...prev, row.championName] : prev
+                        );
+                      };
                       return (
-                        <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
-                          <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
+                        <tr key={row.championName} className={`border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap ${isSelected ? 'bg-green-950/30' : ''}`}>
+                          <td className="p-1 w-8 text-center sticky left-0 border-r border-green-900/40 z-10" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }}>
+                            <button onClick={toggleSelect} className={`w-5 h-5 border text-[9px] font-black flex items-center justify-center transition-colors mx-auto ${isSelected ? 'border-terminal-green bg-terminal-green text-black' : 'border-green-900 text-green-900 hover:border-green-600'}`}>
+                              {isSelected ? selectedForCash.indexOf(row.championName) + 1 : '+'}
+                            </button>
+                          </td>
+                          <td className="p-3 md:p-4 sticky left-8 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }} onClick={() => handleSelectChampion(champ?.moki_id || '')}>
                             <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
                             <div className="flex flex-wrap gap-1 mt-1">
                               {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
@@ -744,7 +818,8 @@ const App: React.FC = () => {
                 <table className="w-full border-collapse font-mono text-[10px] md:text-xs">
                   <thead>
                     <tr className="border-b border-terminal-green bg-green-900/20 text-center uppercase whitespace-nowrap">
-                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-0 bg-black border-r border-terminal-green z-20">Champion_ID</th>
+                      <th className="p-2 w-8 sticky left-0 bg-black border-r border-green-900/40 z-20"></th>
+                      <th className="p-3 md:p-4 text-left min-w-[140px] md:min-w-[250px] sticky left-8 bg-black border-r border-terminal-green z-20">Champion_ID</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w1Synergy')}>W1_1_UTC {synergySortConfig.key === 'w1Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w2Synergy')}>W2_9_UTC {synergySortConfig.key === 'w2Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
                       <th className="p-3 md:p-4 border-r border-green-900/30 cursor-pointer hover:bg-green-900/40 min-w-[80px]" onClick={() => handleSynergySort('w3Synergy')}>W3_17_UTC {synergySortConfig.key === 'w3Synergy' && <span className="text-cyan-400">{synergySortConfig.direction === 'desc' ? '▼' : '▲'}</span>}</th>
@@ -754,9 +829,23 @@ const App: React.FC = () => {
                   <tbody>
                     {synergyGrid.map((row) => {
                       const champ = championsStats.find(s => s.name === row.championName);
+                      const isSelected = selectedForCash.includes(row.championName);
+                      const toggleSelect = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setSelectedForCash(prev =>
+                          prev.includes(row.championName)
+                            ? prev.filter(n => n !== row.championName)
+                            : prev.length < 4 ? [...prev, row.championName] : prev
+                        );
+                      };
                       return (
-                        <tr key={row.championName} className="border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap">
-                          <td className="p-3 md:p-4 sticky left-0 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" onClick={() => handleSelectChampion(champ?.moki_id || '')}>
+                        <tr key={row.championName} className={`border-b border-green-900/20 hover-row transition-colors group whitespace-nowrap ${isSelected ? 'bg-green-950/30' : ''}`}>
+                          <td className="p-1 w-8 text-center sticky left-0 border-r border-green-900/40 z-10" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }}>
+                            <button onClick={toggleSelect} className={`w-5 h-5 border text-[9px] font-black flex items-center justify-center transition-colors mx-auto ${isSelected ? 'border-terminal-green bg-terminal-green text-black' : 'border-green-900 text-green-900 hover:border-green-600'}`}>
+                              {isSelected ? selectedForCash.indexOf(row.championName) + 1 : '+'}
+                            </button>
+                          </td>
+                          <td className="p-3 md:p-4 sticky left-8 bg-black border-r border-terminal-green z-10 cursor-pointer hover:bg-green-900/20" style={{ backgroundColor: isSelected ? 'rgb(5,46,22)' : 'black' }} onClick={() => handleSelectChampion(champ?.moki_id || '')}>
                             <div className="font-bold text-xs md:text-sm whitespace-nowrap">{row.championName} <span className="opacity-40 text-[9px] font-normal uppercase">[{getChampSpecialtyLabel(champ?.moki_id || '')}]</span></div>
                             <div className="flex flex-wrap gap-1 mt-1">
                               {getChampionTraitSchemes(row.championName).map((s, idx, arr) => (
@@ -798,7 +887,7 @@ const App: React.FC = () => {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 
-      <footer className="mt-8 md:mt-12 pt-4 border-t border-terminal-green text-center text-[8px] md:text-[9px] opacity-40 font-mono tracking-widest uppercase pb-4">System_Protocol_v5.1 // Neural_Network_Stable // Mobile_Mapping_Active</footer>
+      <footer className="mt-8 md:mt-12 pt-4 border-t border-terminal-green text-center text-[8px] md:text-[9px] opacity-40 font-mono tracking-widest uppercase pb-4">System_Protocol_v5.2 // Neural_Network_Stable // Mobile_Mapping_Active</footer>
     </div>
   );
 };
